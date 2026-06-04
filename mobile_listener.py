@@ -21,6 +21,7 @@ from typing import Optional
 from shared.chatrace_dashboard_client import ChatRaceDashboardClient
 from db import (
     get_mobile_mode, update_cursor, list_waiting_replies,
+    list_due_actions, mark_action_done, cancel_scheduled_for_phone,
 )
 
 log = logging.getLogger("stock_watcher.mobile_listener")
@@ -169,6 +170,11 @@ def _poll_once(dc: ChatRaceDashboardClient) -> int:
             max_ts = max(max_ts, la)
             continue
 
+        # ‫הלקוח השיב — ‫אם יש מתזמן ארכוב פתוח עליו, ‫בטל אותו‬
+        cancelled = cancel_scheduled_for_phone(phone, "archive_if_no_reply")
+        if cancelled:
+            log.info(f"  cancelled {cancelled} pending archive(s) for {phone} (customer replied)")
+
         # ─── It's a real new inbound that needs attention ───
         _process_new_inbound(phone, name, text, last_in_ts, dc)
         new_count += 1
@@ -178,6 +184,38 @@ def _poll_once(dc: ChatRaceDashboardClient) -> int:
         update_cursor(max_ts)
 
     return new_count
+
+
+def _execute_due_actions(dc: ChatRaceDashboardClient) -> int:
+    """‫עובר על פעולות מתוזמנות שהדדליין שלהן עבר, ‫מבצע אותן.‬"""
+    due = list_due_actions()
+    done = 0
+    for a in due:
+        try:
+            if a.action_type == "archive_if_no_reply":
+                ok = dc.archive_conversation(a.target_phone, archive=True)
+                mark_action_done(a.id, "done" if ok else "skipped",
+                                  note="archived" if ok else "archive failed")
+                # ‫הודיע לאסי שזה קרה‬
+                try:
+                    from telegram_router import _send
+                    _send(f"📦 <b>שיחה ארכובה אוטומטית</b>\n"
+                          f"👤 {a.target_name or '(ללא שם)'}\n"
+                          f"📞 <code>{a.target_phone}</code>\n"
+                          f"<i>מתזמן הסתיים — ‫הלקוח לא ענה.</i>")
+                except Exception as e:
+                    log.warning(f"failed to notify Asi: {e}")
+                done += 1
+            elif a.action_type == "archive_now":
+                ok = dc.archive_conversation(a.target_phone, archive=True)
+                mark_action_done(a.id, "done" if ok else "skipped")
+                done += 1
+            else:
+                mark_action_done(a.id, "skipped", note=f"unknown type {a.action_type}")
+        except Exception as e:
+            log.exception(f"action {a.id} failed: {e}")
+            mark_action_done(a.id, "skipped", note=str(e)[:200])
+    return done
 
 
 def _listener_loop():
@@ -193,9 +231,16 @@ def _listener_loop():
                 count = _poll_once(dc)
                 if count:
                     log.info(f"poll: handled {count} new inbound")
+                # ‫בכל סבב גם מטפלים בפעולות מתוזמנות (גם אם mobile_mode פעיל)‬
+                done = _execute_due_actions(dc)
+                if done:
+                    log.info(f"executed {done} scheduled action(s)")
             else:
-                # Drop the dashboard client when we go inactive — keeps state clean
-                dc = None
+                # ‫גם כשmobile mode כבוי — ‫פעולות מתוזמנות עוד צריכות לרוץ‬
+                # ‫(לדוגמה: ‫אסי הפעיל schedule_archive ‫ואז עזב את מצב נייד)‬
+                if dc is None:
+                    dc = ChatRaceDashboardClient.from_env()
+                _execute_due_actions(dc)
         except Exception as e:
             log.exception(f"listener loop iteration error: {e}")
             dc = None  # reset on error

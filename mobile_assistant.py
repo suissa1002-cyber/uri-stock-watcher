@@ -154,6 +154,39 @@ CLAUDE_TOOLS = [
         },
     },
     {
+        "name": "archive_conversation",
+        "description": (
+            "‫מארכב מיידית שיחת WhatsApp עם לקוח. ‫השתמש כשהשיחה הסתיימה‬ "
+            "‫(לקוח קיבל את כל מה שצריך, ‫או שגוועה ולא רלוונטית). ‫מעביר את "
+            "‫השיחה מ-Inbox ל-Archived ב-ConnectOp."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type": "string", "description": "‫טלפון בפורמט בינלאומי בלי + (לדוגמה 972501234567)"},
+            },
+            "required": ["phone"],
+        },
+    },
+    {
+        "name": "schedule_archive_if_no_reply",
+        "description": (
+            "‫מתזמן ארכוב **מותנה** — ‫בעוד N דקות, ‫**אם הלקוח לא ענה בינתיים**, "
+            "‫השיחה תארכב אוטומטית. ‫אם הלקוח כן ענה — ‫המתזמן יבוטל אוטומטית "
+            "‫והשיחה תישאר ב-Inbox. ‫שימושי כשאסי שולח הודעה ורוצה לתת ללקוח "
+            "‫זמן להגיב, ‫ואז לארכב אם לא ענה."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type": "string", "description": "‫טלפון בינלאומי בלי +"},
+                "name":  {"type": "string", "description": "‫שם הלקוח (לתיעוד)"},
+                "delay_minutes": {"type": "integer", "description": "‫כמה דקות לחכות (1-1440 — ‫עד 24h)"},
+            },
+            "required": ["phone", "delay_minutes"],
+        },
+    },
+    {
         "name": "get_customer_orders",
         "description": (
             "‫מושך את כל הזמנות הלקוח מ-WooCommerce לפי טלפון. ‫מחזיר רשימה של "
@@ -247,6 +280,41 @@ def _tool_get_history(phone: str, dashboard) -> str:
             "when":      when,
         })
     return json.dumps(out, ensure_ascii=False)
+
+
+def _tool_archive_conversation(phone: str, dashboard) -> str:
+    """Archive a conversation immediately via ConnectOp dashboard API."""
+    try:
+        ok = dashboard.archive_conversation(phone.strip(), archive=True)
+        return json.dumps({"ok": bool(ok), "phone": phone, "archived": True}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _tool_schedule_archive(phone: str, name: str, delay_minutes: int) -> str:
+    """Schedule a conditional archive — only archives if customer doesn't reply."""
+    from datetime import datetime, timezone, timedelta
+    from db import add_scheduled_action
+    try:
+        delay = max(1, min(int(delay_minutes), 1440))
+        due = datetime.now(timezone.utc) + timedelta(minutes=delay)
+        a = add_scheduled_action(
+            action_type="archive_if_no_reply",
+            target_phone=phone.strip(),
+            target_name=name or "",
+            due_at=due,
+            note=f"scheduled for {delay} min from now",
+        )
+        from datetime import timezone as tz, timedelta as td
+        IL = tz(td(hours=3))
+        due_local = due.astimezone(IL).strftime("%d/%m %H:%M")
+        return json.dumps({
+            "ok": True, "id": a.id, "due_at_il": due_local,
+            "delay_minutes": delay,
+            "note": "‫אם הלקוח לא יענה עד אז → ‫השיחה תארכב אוטומטית. ‫אם יענה → ‫המתזמן מבוטל.",
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
 def _tool_get_customer_orders(phone: str) -> str:
@@ -358,6 +426,13 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
             return _tool_find_customer(args.get("query",""), dashboard)
         if name == "get_customer_orders":
             return _tool_get_customer_orders(args.get("phone",""))
+        if name == "archive_conversation":
+            return _tool_archive_conversation(args.get("phone",""), dashboard)
+        if name == "schedule_archive_if_no_reply":
+            return _tool_schedule_archive(
+                args.get("phone",""), args.get("name",""),
+                args.get("delay_minutes", 30),
+            )
         return json.dumps({"error": f"unknown tool {name}"}, ensure_ascii=False)
     except Exception as e:
         log.exception(f"tool {name} failed: {e}")
@@ -462,6 +537,17 @@ QUERY_SYSTEM_PROMPT = """\
 
 ‫**אל תוסיף JSON, אל תוסיף סוגריים מסולסלים** — ‫תחזיר HTML טקסט ישר.‬
 ‫כן, תוכל להוסיף שורה ראשונה עם הסיכום אם רוצה, ‏אבל לא חובה.‬
+
+## ‫🛠️ ‫**יכולות פעולה** (לא רק קריאה)‬
+
+‫יש לך כלים שמשנים מצב — ‫השתמש בהם כשאסי מבקש פעולה ספציפית:‬
+
+- ‫`archive_conversation(phone)` — ‫ארכב מיידית‬
+- ‫`schedule_archive_if_no_reply(phone, name, delay_minutes)` — ‫מתזמן מותנה: ‫בעוד N דקות, ‫**אם הלקוח לא ענה**, ‫תארכב אוטומטית. ‫אם הלקוח כן עונה — ‫המתזמן מתבטל לבדו.‬
+
+‫**אל תאמר "אני לא יכול לעשות X" אם יש לך כלי לזה!** ‫בדוק לפני שאתה אומר שאי אפשר.‬
+
+‫**אל תוסיף הבטחות שאתה לא יודע לקיים** — ‫אם אסי אומר "אם לא יענה בעוד 30 דק תארכב", ‫אתה צריך מיד להפעיל ‫`schedule_archive_if_no_reply` ‫**בפועל**. ‫אל תאמר "‫טוב, ‫אעביר" בלי לקרוא לכלי. ‫זו הטעיה.‬
 
 ## ‫⚠️ ‏קריאת מלאי — ‫קרא בקפדנות!‬
 

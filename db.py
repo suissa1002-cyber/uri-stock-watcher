@@ -83,6 +83,26 @@ class PendingReply(Base):
         }
 
 
+class ScheduledAction(Base):
+    """
+    ‫פעולה ‏מתוזמנת — Claude מבקש "‏ארכב את השיחה אם אין תגובה ב-30 ‫דק'".‬
+    ‫listener בודק כל 30 שניות אם הdue_at הגיע ומבצע.‬
+    """
+    __tablename__ = "scheduled_actions"
+
+    id              = Column(Integer, primary_key=True)
+    action_type     = Column(String(40), nullable=False)   # 'archive_if_no_reply', 'archive_now'
+    target_phone    = Column(String(20), nullable=False, index=True)
+    target_name     = Column(String(120), default="")
+    due_at          = Column(DateTime, nullable=False, index=True)
+    # Status: 'pending' | 'done' | 'cancelled' | 'skipped' (e.g. customer replied)
+    status          = Column(String(20), default="pending", nullable=False, index=True)
+    # When created (for 'archive if no reply since' — compare against this)
+    created_at      = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    done_at         = Column(DateTime, nullable=True)
+    note            = Column(Text, default="")
+
+
 class WatchItem(Base):
     """
     ‫רשומה ברשימת המעקב.‬
@@ -383,6 +403,67 @@ def get_pending_by_telegram_id(telegram_message_id: int) -> Optional[PendingRepl
         return s.execute(
             select(PendingReply).where(PendingReply.telegram_message_id == telegram_message_id)
         ).scalar_one_or_none()
+
+
+def add_scheduled_action(action_type: str, target_phone: str, target_name: str,
+                          due_at: datetime, note: str = "") -> ScheduledAction:
+    """Schedule a future action (e.g. archive after 30 min)."""
+    with session_scope() as s:
+        a = ScheduledAction(
+            action_type=action_type,
+            target_phone=target_phone.strip(),
+            target_name=(target_name or "").strip(),
+            due_at=due_at,
+            status="pending",
+            note=note,
+        )
+        s.add(a)
+        s.flush()
+        s.refresh(a)
+        return a
+
+
+def list_due_actions() -> list[ScheduledAction]:
+    """All pending actions whose due_at has passed."""
+    now = datetime.now(timezone.utc)
+    with session_scope() as s:
+        return list(s.execute(
+            select(ScheduledAction).where(
+                ScheduledAction.status == "pending",
+                ScheduledAction.due_at <= now,
+            ).order_by(ScheduledAction.due_at.asc())
+        ).scalars().all())
+
+
+def mark_action_done(action_id: int, status: str = "done", note: str = ""):
+    with session_scope() as s:
+        a = s.get(ScheduledAction, action_id)
+        if a:
+            a.status   = status
+            a.done_at  = datetime.now(timezone.utc)
+            if note:
+                a.note = (a.note + " | " + note) if a.note else note
+
+
+def cancel_scheduled_for_phone(phone: str, action_type: str = None) -> int:
+    """
+    ‫מבטל פעולות מתוזמנות עתידיות לטלפון מסוים.‬
+    ‫שימושי: ‫אם הלקוח השיב — ‫לא לארכב יותר.‬
+    """
+    cancelled = 0
+    with session_scope() as s:
+        from sqlalchemy import update
+        q = select(ScheduledAction).where(
+            ScheduledAction.status == "pending",
+            ScheduledAction.target_phone == phone.strip(),
+        )
+        if action_type:
+            q = q.where(ScheduledAction.action_type == action_type)
+        for a in s.execute(q).scalars():
+            a.status = "cancelled"
+            a.done_at = datetime.now(timezone.utc)
+            cancelled += 1
+    return cancelled
 
 
 def get_latest_waiting() -> Optional[PendingReply]:
