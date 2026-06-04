@@ -158,6 +158,24 @@ def remind_tasks_endpoint(dry_run: bool = False):
 
 # ─── Mobile mode endpoints ──────────────────────────────────────────
 
+@app.get("/debug/telegram-messages", dependencies=[Depends(require_token)])
+def debug_telegram_messages(limit: int = 20):
+    """‫דיבאג: ‫רואה את הזיכרון של הודעות הטלגרם.‬"""
+    from db import session_scope, TelegramMessage
+    from sqlalchemy import select
+    with session_scope() as s:
+        rows = s.execute(
+            select(TelegramMessage).order_by(TelegramMessage.id.desc()).limit(limit)
+        ).scalars().all()
+        return {"count": len(rows), "messages": [
+            {"id":r.id,"chat_id":r.chat_id,"role":r.role,
+             "telegram_msg_id":r.telegram_msg_id,
+             "text_preview":(r.text or "")[:100],
+             "ts":r.ts.isoformat() if r.ts else None}
+            for r in rows
+        ]}
+
+
 @app.get("/scheduled-actions", dependencies=[Depends(require_token)])
 def list_scheduled_actions(status: str = "pending"):
     """‫רשימה של פעולות מתוזמנות (לדיבאג + ‫שקיפות לאסי).‬"""
