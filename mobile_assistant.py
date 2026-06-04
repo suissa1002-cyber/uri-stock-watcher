@@ -691,6 +691,16 @@ QUERY_SYSTEM_PROMPT = """\
 
 ‫**אל תוסיף הבטחות שאתה לא יודע לקיים** — ‫אם אסי אומר "אם לא יענה בעוד 30 דק תארכב", ‫אתה צריך מיד להפעיל ‫`schedule_archive_if_no_reply` ‫**בפועל**. ‫אל תאמר "‫טוב, ‫אעביר" בלי לקרוא לכלי. ‫זו הטעיה.‬
 
+## ‫🔗 ‫**קישורים למוצרים — ‫אתה כן יכול!**‬
+
+‫**הכלי ‫`search_product` ‫כבר מחזיר ‫`url` ‫(permalink ‫ל-WC).** ‫כשאסי שואל "מה הקישור?", ‫"תן לי לינק", ‫"איפה זה באתר?":‬
+
+1. ‫אם ‫המוצר ‫כבר ‫נדון בשיחה הנוכחית ‫(הזיכרון או Reply ‫על תשובה קודמת) — ‫קרא ‫`search_product` ‫עם שם המוצר.‬
+2. ‫קבל את ה-`url` ‫מהתוצאה ‫הראשונה הרלוונטית.‬
+3. ‫השב עם הקישור: ‫`<a href="URL">‫שם המוצר</a>` ‫או ‫רק את הURL.‬
+
+‫**אסור** ‫לומר ‫"אין לי כלי לקישורים" — ‫זו ‫טעות. ‫קישורים זמינים דרך ‫`search_product`.‬
+
 ## ‫⚠️ ‏קריאת מלאי — ‫קרא בקפדנות!‬
 
 ‫כשמשתמש ב-`check_stock_at_branches`, ‫הtool מחזיר רשימה של מוצרים. ‏לכל אחד:‬
@@ -767,12 +777,13 @@ def answer_query(question: str, dashboard=None,
         messages.append({"role": role, "content": txt})
     messages.append({"role": "user", "content": question})
 
-    # ‫שאילתות אסי: ‫Haiku 4.5 (פי 12 זול מ-Sonnet). ‫איכות מספיקה לlookups.‬
-    # ‫טיוטות ללקוח נשארות Sonnet 4.5 ‫(נדרשות יצירתיות + ‫רגישות שפתית).‬
+    # ‫Sonnet 4.5 — ‫Haiku נכשל ‫בreasoning ‫מורכב (לא חיבר Reply context →‬
+    # ‫search_product → permalink). ‫עדיף ‫עלות גבוהה מ-בוט שבור.‬
+    # ‫עם ‫caching, ‫עלות אמיתית ~$0.02-0.04 לשאילתה.‬
     final_text = None
     for turn in range(6):
         resp = client.messages.create(
-            model="claude-haiku-4-5",
+            model="claude-sonnet-4-5",
             max_tokens=1500,
             system=[{
                 "type": "text",
