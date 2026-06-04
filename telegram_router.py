@@ -230,18 +230,41 @@ def handle_command(text: str, chat_id: int,
     # ‫רק אם הפעולה היא באמת send/cancel/edit נדאג לטיוטה ממתינה.‬
     # ‫אחרת — ‏תיפול לבסוף ל-_handle_query (ad-hoc Q&A).‬
     if action in ("send", "cancel", "edit"):
+        from db import list_waiting_replies
         reply_id = cmd.get("reply_id")
-        # ‫1. ‫reply_id מפורש (#REPLY-N) ‫>‫ 2. ‫reply_to context ‫>‫ 3. ‫latest waiting‬
+
+        # ‫סדר עדיפויות לזיהוי הטיוטה:‬
+        # ‫1. ‫reply_id מפורש (#REPLY-N) → ‫הכי ספציפי‬
+        # ‫2. ‫תגובת Reply ‫בטלגרם → ‫זיהוי לפי message_id‬
+        # ‫3. ‫אם יש בדיוק טיוטה אחת ממתינה → ‫היא הברירת מחדל‬
+        # ‫4. ‫אם יש כמה ‫ולא הגיב כReply — ‫מבקש להבהיר‬
         reply = None
         if reply_id:
             reply = get_pending_reply(reply_id)
-        if not reply and reply_context:
+            if not reply or reply.status != "waiting":
+                _send(f"❓ לא מצאתי טיוטה <code>#{reply_id}</code> במצב ממתין.")
+                return {"ok": False, "error": "reply_id_not_waiting"}
+        elif reply_context and reply_context.status == "waiting":
             reply = reply_context
-        if not reply:
-            reply = get_latest_waiting()
-        if not reply or reply.status != "waiting":
-            _send(f"❓ לא מצאתי טיוטה ממתינה לאישור. השליחה / ביטול לא בוצעו.")
-            return {"ok": False, "error": "no_waiting_reply"}
+        else:
+            waiting = list_waiting_replies()
+            if not waiting:
+                _send(f"❓ אין טיוטות ממתינות כרגע.")
+                return {"ok": False, "error": "no_waiting_replies"}
+            elif len(waiting) == 1:
+                reply = waiting[0]  # ‫רק טיוטה אחת — ‫אין בלבול‬
+            else:
+                # ‫כמה ממתינות — ‫אסור לנחש. ‫שלח רשימה ובקש שיגיב כReply.‬
+                lines = [
+                    f"⚠️ <b>{len(waiting)} ‫טיוטות ממתינות.</b> ‫כדי לבצע פעולה ספציפית,",
+                    f"‫השב (Reply) ‫על ההודעה של הטיוטה הרצויה ‫עם הפקודה.",
+                    "",
+                ]
+                for w in waiting:
+                    lines.append(f"  • <code>#{w.id}</code>  {w.customer_name}  <code>{w.customer_phone}</code>")
+                _send("\n".join(lines))
+                return {"ok": False, "error": "ambiguous_reply_target",
+                         "waiting_count": len(waiting)}
 
     if action == "send":
         from shared.connectop_client import ConnectOpClient
