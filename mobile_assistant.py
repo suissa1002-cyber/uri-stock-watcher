@@ -120,11 +120,37 @@ CLAUDE_TOOLS = [
     },
     {
         "name": "get_conversation_history",
-        "description": "‫מושך עד 20 ההודעות האחרונות של השיחה הנוכחית עם הלקוח. ‫שימושי להבין הקשר ושיחות עבר.",
+        "description": (
+            "‫מושך עד 20 ההודעות האחרונות של שיחת WhatsApp ‏עם לקוח. ‫מקבל phone "
+            "‫(אם ידוע) — ‫אחרת השאר ריק כדי לקבל את השיחה של הלקוח הנוכחי בהקשר (אם יש)."
+        ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "phone": {
+                    "type": "string",
+                    "description": "‫טלפון בפורמט בינלאומי בלי + (לדוגמה: 972501234567). ‫השאר ריק לטיפול בלקוח הנוכחי."
+                },
+            },
             "required": [],
+        },
+    },
+    {
+        "name": "find_customer",
+        "description": (
+            "‫מחפש לקוחות לפי שם ‏(או חלק ממנו), ‫או לפי טלפון/חלק מטלפון. "
+            "‫מחזיר רשימה של לקוחות תואמים עם ‏phone, ‫full_name, ‫זמן פעילות אחרון, ‫והודעה אחרונה. "
+            "‫**השתמש בזה לפני get_conversation_history** ‫כשאתה צריך למצוא לקוח לפי שם בלבד."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "‫שם או חלק ממנו ‏(לדוגמה 'מוחמד', 'יוסי כהן'), ‫או טלפון/חלק מטלפון."
+                },
+            },
+            "required": ["query"],
         },
     },
 ]
@@ -183,16 +209,59 @@ def _tool_check_stock(product_name: str) -> str:
 
 def _tool_get_history(phone: str, dashboard) -> str:
     """Last 20 messages of the conversation."""
-    msgs = dashboard.get_conversation(phone, limit=20)
+    if not phone or not phone.strip():
+        return json.dumps({"error": "no phone provided — use find_customer first"},
+                           ensure_ascii=False)
+    msgs = dashboard.get_conversation(phone.strip(), limit=20)
     msgs_sorted = sorted(msgs, key=lambda m: int(m.get("ts") or 0))
     out = []
+    from datetime import datetime, timezone, timedelta
+    IL = timezone(timedelta(hours=3))
     for m in msgs_sorted[-20:]:
+        ts = int(m.get("ts") or 0)
+        when = ""
+        if ts:
+            when = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IL).strftime("%d/%m %H:%M")
         out.append({
             "direction": m.get("direction"),
             "text":      (m.get("text") or "")[:200],
-            "ts":        m.get("ts"),
+            "when":      when,
         })
     return json.dumps(out, ensure_ascii=False)
+
+
+def _tool_find_customer(query: str, dashboard) -> str:
+    """Search the ConnectOp inbox for customers matching a name/phone fragment."""
+    from datetime import datetime, timezone, timedelta
+    IL = timezone(timedelta(hours=3))
+    q = (query or "").strip().lower()
+    if not q:
+        return json.dumps([], ensure_ascii=False)
+    # Pull a larger window — recent customers most likely
+    try:
+        resp = dashboard._post_user_php({
+            "op":"conversations","op1":"get",
+            "offset":0,"limit":200,"pageName":"inbox",
+        })
+        data = resp.get("data", []) if isinstance(resp, dict) else []
+    except Exception as e:
+        return json.dumps({"error": f"inbox fetch failed: {e}"}, ensure_ascii=False)
+    matches = []
+    for x in data:
+        name = (x.get("full_name") or "").strip()
+        phone = str(x.get("ms_id") or "").strip()
+        if q in name.lower() or q in phone.lower():
+            la = int(x.get("last_active") or 0)
+            when = ""
+            if la:
+                when = datetime.fromtimestamp(la, tz=timezone.utc).astimezone(IL).strftime("%d/%m %H:%M")
+            matches.append({
+                "phone":       phone,
+                "full_name":   name,
+                "last_active": when,
+                "last_msg":    (x.get("last_msg") or "")[:120],
+            })
+    return json.dumps(matches[:10], ensure_ascii=False)
 
 
 def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
@@ -202,7 +271,11 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
         if name == "check_stock_at_branches":
             return _tool_check_stock(args.get("product_name",""))
         if name == "get_conversation_history":
-            return _tool_get_history(phone, dashboard)
+            # ‫אם Claude נתן phone ‏explicit — ‫השתמש בו. ‫אחרת — ‫הקשר (phone הפנימי).‬
+            requested_phone = (args.get("phone") or "").strip() or phone
+            return _tool_get_history(requested_phone, dashboard)
+        if name == "find_customer":
+            return _tool_find_customer(args.get("query",""), dashboard)
         return json.dumps({"error": f"unknown tool {name}"}, ensure_ascii=False)
     except Exception as e:
         log.exception(f"tool {name} failed: {e}")
