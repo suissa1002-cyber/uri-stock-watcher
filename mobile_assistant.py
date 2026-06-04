@@ -169,6 +169,25 @@ CLAUDE_TOOLS = [
         },
     },
     {
+        "name": "schedule_send_message",
+        "description": (
+            "‫מתזמן **שליחת הודעת WhatsApp** ‫ללקוח בזמן ספציפי בעתיד. "
+            "‫שימושי כשאסי אומר 'שלח לו הודעה מחר ב-9 בבוקר' או 'שלח לו "
+            "‫אחה\"צ אם לא ענה'. ‫**ההודעה נשלחת בלי תלות בתגובת הלקוח.** "
+            "‫אם רוצים שליחה רק אם לא ענה — ‫השתמש ב-schedule_archive_if_no_reply ‫במקום."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type":"string","description":"‫טלפון בינלאומי בלי +"},
+                "name":  {"type":"string","description":"‫שם לקוח (לתיעוד)"},
+                "text":  {"type":"string","description":"‫הטקסט המדויק שיישלח ב-WhatsApp"},
+                "delay_minutes": {"type":"integer","description":"‫כמה דקות מעכשיו (1-1440). ‫אם אסי אמר 'מחר 9:00' חשב יחסית."},
+            },
+            "required": ["phone","text","delay_minutes"],
+        },
+    },
+    {
         "name": "schedule_archive_if_no_reply",
         "description": (
             "‫מתזמן ארכוב **מותנה** — ‫בעוד N דקות, ‫**אם הלקוח לא ענה בינתיים**, "
@@ -287,6 +306,32 @@ def _tool_archive_conversation(phone: str, dashboard) -> str:
     try:
         ok = dashboard.archive_conversation(phone.strip(), archive=True)
         return json.dumps({"ok": bool(ok), "phone": phone, "archived": True}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _tool_schedule_send_message(phone: str, name: str, text: str,
+                                  delay_minutes: int) -> str:
+    """Schedule a WhatsApp message to be sent at a specific time."""
+    from datetime import datetime, timezone, timedelta
+    from db import add_scheduled_action
+    try:
+        delay = max(1, min(int(delay_minutes), 1440))
+        due = datetime.now(timezone.utc) + timedelta(minutes=delay)
+        a = add_scheduled_action(
+            action_type="send_message",
+            target_phone=phone.strip(),
+            target_name=name or "",
+            due_at=due,
+            note=f"text:{text[:500]}",
+        )
+        IL = timezone(timedelta(hours=3))
+        due_local = due.astimezone(IL).strftime("%d/%m %H:%M")
+        return json.dumps({
+            "ok": True, "id": a.id,
+            "due_at_il": due_local, "delay_minutes": delay,
+            "preview": text[:200],
+        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
@@ -448,6 +493,11 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
                 args.get("phone",""), args.get("name",""),
                 args.get("delay_minutes", 30),
             )
+        if name == "schedule_send_message":
+            return _tool_schedule_send_message(
+                args.get("phone",""), args.get("name",""),
+                args.get("text",""), args.get("delay_minutes", 60),
+            )
         return json.dumps({"error": f"unknown tool {name}"}, ensure_ascii=False)
     except Exception as e:
         log.exception(f"tool {name} failed: {e}")
@@ -580,6 +630,17 @@ QUERY_SYSTEM_PROMPT = """\
 
 ‫**שמות סניפים**: ‫השתמש בשם המלא בעברית כפי שמופיע ב-by_branch ‏(לדוגמה: ‏"סטאר", ‏"גן העיר", ‏"עד הלום", ‏"מחסן").‬
 
+‫**🏷️ ‫NewOrder ID — ‫תמיד הצג!**‬
+
+‫כשמראים מלאי לאסי, **תמיד** ‫כלול את ‫`id` (מק"ט NewOrder) ‫ליד כל וריאציה. ‫אסי משתמש בזה ‫בעבודה היומית. ‫פורמט:‬
+
+```
+‫• <b>Galaxy S25 256GB Black</b>  <code>#519781</code>
+   ‫₪2,469 | ‫סטאר=1, ‫עד הלום=2
+```
+
+‫**אל תכלול NewOrder ID ‫בטיוטות ללקוחות** — ‫רק בתשובות לאסי בטלגרם.‬
+
 ## ‫🔍 ‫**מתי להשתמש בכל כלי**‬
 
 ‫**"היסטוריה של לקוח X" / "ספר לי על X" / "מה הסטטוס של X"** —‬
@@ -629,10 +690,12 @@ def answer_query(question: str, dashboard=None,
         messages.append({"role": role, "content": txt})
     messages.append({"role": "user", "content": question})
 
+    # ‫שאילתות אסי: ‫Haiku 4.5 (פי 12 זול מ-Sonnet). ‫איכות מספיקה לlookups.‬
+    # ‫טיוטות ללקוח נשארות Sonnet 4.5 ‫(נדרשות יצירתיות + ‫רגישות שפתית).‬
     final_text = None
     for turn in range(6):
         resp = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-haiku-4-5",
             max_tokens=1500,
             system=[{
                 "type": "text",

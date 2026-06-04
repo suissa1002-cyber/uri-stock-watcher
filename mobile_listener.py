@@ -192,6 +192,22 @@ def _execute_due_actions(dc: ChatRaceDashboardClient) -> int:
     done = 0
     for a in due:
         try:
+            if a.action_type == "send_message":
+                # ‫`note` ‫מתחיל ב-"text:..." ‫(שמרתי שם את הטקסט)‬
+                text = (a.note or "").split("text:", 1)[-1] if a.note else ""
+                from shared.connectop_client import ConnectOpClient
+                co = ConnectOpClient.from_env()
+                co.send_text_as_human(a.target_phone, text)
+                mark_action_done(a.id, "done", note="sent")
+                try:
+                    from telegram_router import _send
+                    _send(f"📨 <b>הודעה נשלחה ‫אוטומטית</b>\n"
+                          f"👤 {a.target_name}\n"
+                          f"📞 <code>{a.target_phone}</code>\n"
+                          f"<blockquote>{text[:300]}</blockquote>")
+                except Exception: pass
+                done += 1
+                continue
             if a.action_type == "archive_if_no_reply":
                 ok = dc.archive_conversation(a.target_phone, archive=True)
                 mark_action_done(a.id, "done" if ok else "skipped",
