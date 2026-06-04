@@ -21,7 +21,11 @@ from db import (
 
 log = logging.getLogger("stock_watcher.telegram_router")
 
-TELEGRAM_BOT_TOKEN     = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+# Mobile mode uses a dedicated bot (`@green_uri_whatsapp_bot`) so it's
+# completely separated from the invoices bot used by Itzik + tasks_reminder.
+# Falls back to TELEGRAM_BOT_TOKEN if URI_MOBILE_BOT_TOKEN isn't set yet.
+TELEGRAM_BOT_TOKEN     = os.environ.get("URI_MOBILE_BOT_TOKEN") \
+                          or os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_TASKS_CHAT_ID = os.environ.get("TELEGRAM_TASKS_CHAT_ID", "")
 # Only Asi's chat_id can send commands — security check.
 ALLOWED_CHAT_IDS = {
