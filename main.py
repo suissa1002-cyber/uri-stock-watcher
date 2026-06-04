@@ -32,9 +32,14 @@ from apscheduler.triggers.cron import CronTrigger
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-from db import init_db, add_watch, list_all_watches, mark_cancelled
+from db import (
+    init_db, add_watch, list_all_watches, mark_cancelled,
+    get_mobile_mode, set_mobile_mode, list_waiting_replies,
+)
 from checker import run_check
 from tasks_reminder import run_reminder
+from mobile_listener import start_listener, stop_listener
+from telegram_router import handle_command
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,6 +156,65 @@ def remind_tasks_endpoint(dry_run: bool = False):
     return run_reminder(dry_run=dry_run)
 
 
+# ─── Mobile mode endpoints ──────────────────────────────────────────
+
+@app.get("/mobile-mode/status", dependencies=[Depends(require_token)])
+def mobile_status():
+    """‫סטטוס נוכחי של המצב הנייד.‬"""
+    m = get_mobile_mode()
+    waiting = list_waiting_replies()
+    return {
+        "active":             bool(m.active),
+        "activated_at":       m.activated_at.isoformat() if m.activated_at else None,
+        "deactivated_at":     m.deactivated_at.isoformat() if m.deactivated_at else None,
+        "last_processed_ts":  m.last_processed_ts,
+        "waiting_replies":    [{"id": r.id, "customer": r.customer_name,
+                                "phone": r.customer_phone,
+                                "created_at": r.created_at.isoformat()}
+                               for r in waiting],
+    }
+
+
+@app.post("/mobile-mode/activate", dependencies=[Depends(require_token)])
+def mobile_activate():
+    """‫הפעלת מצב נייד — ‫poller מתחיל לפעול.‬"""
+    m = set_mobile_mode(True)
+    return {"active": bool(m.active), "activated_at": m.activated_at.isoformat()}
+
+
+@app.post("/mobile-mode/deactivate", dependencies=[Depends(require_token)])
+def mobile_deactivate():
+    """‫כיבוי מצב נייד — ‫poller יושן.‬"""
+    m = set_mobile_mode(False)
+    return {"active": bool(m.active), "deactivated_at": m.deactivated_at.isoformat()}
+
+
+# ─── Telegram webhook ──────────────────────────────────────────────
+
+class TelegramUpdate(BaseModel):
+    """Subset of Telegram Update we care about."""
+    update_id: int
+    message:   Optional[dict] = None
+
+
+@app.post("/telegram-webhook")
+def telegram_webhook(update: TelegramUpdate):
+    """
+    Telegram → ‏webhook → ‏פירוש פקודה → ‏ביצוע.
+
+    No Bearer auth — Telegram doesn't sign requests with our token.
+    Instead we whitelist by chat_id inside `handle_command`.
+    """
+    msg = update.message or {}
+    text = (msg.get("text") or "").strip()
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    if not text or not chat_id:
+        return {"ok": True, "skipped": "no_text_or_chat"}
+    result = handle_command(text, int(chat_id))
+    return result
+
+
 # ── Scheduler ──
 _scheduler: Optional[BackgroundScheduler] = None
 
@@ -201,12 +265,15 @@ def on_startup():
     init_db()
     log.info("Database initialized")
     start_scheduler()
+    start_listener()   # mobile_listener thread (idle until mobile_mode toggled on)
+    log.info("Mobile listener thread started (idle until activated)")
 
 
 @app.on_event("shutdown")
 def on_shutdown():
     if _scheduler:
         _scheduler.shutdown(wait=False)
+    stop_listener()
 
 
 # ── Entrypoint for `python main.py` (Procfile / Docker CMD) ──

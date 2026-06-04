@@ -21,6 +21,68 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 Base = declarative_base()
 
 
+class MobileMode(Base):
+    """
+    ‫מצב 'אורי בחוץ' — ‏מודל singleton (id תמיד 1).‬
+
+    ‫כשactive=True, ‏ה-poller מאזין להודעות WhatsApp חדשות, ‏טוען קונטקסט,‬
+    ‫מנסח טיוטה דרך Claude, ‏ושולח לאסי בטלגרם לאישור.‬
+    """
+    __tablename__ = "mobile_mode"
+
+    id                    = Column(Integer, primary_key=True, default=1)
+    active                = Column(Integer, default=0, nullable=False)  # bool as int for sqlite compat
+    activated_at          = Column(DateTime, nullable=True)
+    deactivated_at        = Column(DateTime, nullable=True)
+    # Cursor — ms_id of the latest processed conversation timestamp.
+    # Anything newer than this is "new" and gets handled.
+    last_processed_ts     = Column(BigInteger, default=0, nullable=False)
+
+
+class PendingReply(Base):
+    """
+    ‫טיוטה ממתינה לאישור.‬
+
+    ‫כל פעם שמתגלה הודעה חדשה ‏(או תגובת המשך), ‏נוצרת רשומה כאן עם‬
+    ‫הטיוטה שClaude הציע. ‏אחרי שאסי אומר 'שלח' — ‏הסטטוס משתנה ל-sent.‬
+    """
+    __tablename__ = "pending_replies"
+
+    id                    = Column(Integer, primary_key=True)
+    customer_phone        = Column(String(20), nullable=False, index=True)
+    customer_name         = Column(String(120), nullable=False)
+    # The actual message text that triggered this (the customer's latest)
+    customer_message      = Column(Text, nullable=False)
+    # Summary that Claude built for Asi
+    context_summary       = Column(Text, default="")
+    # The current draft to send (gets replaced when Asi says "שנה: ...")
+    claude_draft          = Column(Text, nullable=False)
+    # Telegram message_id we sent to Asi (for replies / threading)
+    telegram_message_id   = Column(BigInteger, nullable=True)
+    # Status: "waiting" | "sent" | "cancelled" | "stale"
+    status                = Column(String(20), default="waiting", nullable=False, index=True)
+    created_at            = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                                   nullable=False)
+    sent_at               = Column(DateTime, nullable=True)
+    # Number of revisions before "שלח" — for telemetry / quality tracking
+    revision_count        = Column(Integer, default=0, nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "id":                  self.id,
+            "customer_phone":      self.customer_phone,
+            "customer_name":       self.customer_name,
+            "customer_message":    self.customer_message,
+            "context_summary":     self.context_summary,
+            "claude_draft":        self.claude_draft,
+            "telegram_message_id": self.telegram_message_id,
+            "status":              self.status,
+            "created_at":          self.created_at.isoformat() if self.created_at else None,
+            "sent_at":             self.sent_at.isoformat() if self.sent_at else None,
+            "revision_count":      self.revision_count,
+        }
+
+
 class WatchItem(Base):
     """
     ‫רשומה ברשימת המעקב.‬
@@ -203,3 +265,131 @@ def update_last_checked(item_id: int):
         item = s.get(WatchItem, item_id)
         if item:
             item.last_checked_at = datetime.now(timezone.utc)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Mobile mode helpers
+# ─────────────────────────────────────────────────────────────────────
+
+def get_mobile_mode() -> MobileMode:
+    """Return the singleton MobileMode row, creating it if missing."""
+    with session_scope() as s:
+        m = s.get(MobileMode, 1)
+        if m is None:
+            m = MobileMode(id=1, active=0)
+            s.add(m)
+            s.flush()
+            s.refresh(m)
+        return m
+
+
+def set_mobile_mode(active: bool) -> MobileMode:
+    """Toggle mobile mode. Updates activated_at / deactivated_at timestamps."""
+    with session_scope() as s:
+        m = s.get(MobileMode, 1)
+        if m is None:
+            m = MobileMode(id=1)
+            s.add(m)
+        now = datetime.now(timezone.utc)
+        if active and not m.active:
+            m.active         = 1
+            m.activated_at   = now
+            # Reset cursor to "now" so we don't process old messages
+            import time
+            m.last_processed_ts = int(time.time())
+        elif not active and m.active:
+            m.active         = 0
+            m.deactivated_at = now
+        s.flush()
+        s.refresh(m)
+        return m
+
+
+def update_cursor(ts: int):
+    """Update the last_processed_ts cursor."""
+    with session_scope() as s:
+        m = s.get(MobileMode, 1)
+        if m and ts > m.last_processed_ts:
+            m.last_processed_ts = ts
+
+
+def add_pending_reply(customer_phone: str, customer_name: str,
+                       customer_message: str, context_summary: str,
+                       claude_draft: str) -> PendingReply:
+    """Persist a new draft awaiting Asi's approval."""
+    with session_scope() as s:
+        r = PendingReply(
+            customer_phone=customer_phone,
+            customer_name=customer_name,
+            customer_message=customer_message,
+            context_summary=context_summary,
+            claude_draft=claude_draft,
+            status="waiting",
+        )
+        s.add(r)
+        s.flush()
+        s.refresh(r)
+        return r
+
+
+def list_waiting_replies() -> list[PendingReply]:
+    """All pending replies currently waiting on Asi's approval."""
+    with session_scope() as s:
+        return list(s.execute(
+            select(PendingReply).where(PendingReply.status == "waiting")
+                                 .order_by(PendingReply.created_at.asc())
+        ).scalars().all())
+
+
+def get_pending_reply(reply_id: int) -> Optional[PendingReply]:
+    with session_scope() as s:
+        return s.get(PendingReply, reply_id)
+
+
+def mark_reply_sent(reply_id: int):
+    with session_scope() as s:
+        r = s.get(PendingReply, reply_id)
+        if r:
+            r.status  = "sent"
+            r.sent_at = datetime.now(timezone.utc)
+
+
+def mark_reply_cancelled(reply_id: int):
+    with session_scope() as s:
+        r = s.get(PendingReply, reply_id)
+        if r:
+            r.status = "cancelled"
+
+
+def update_reply_draft(reply_id: int, new_draft: str):
+    """Replace the draft text (used when Asi says 'שנה: ...')."""
+    with session_scope() as s:
+        r = s.get(PendingReply, reply_id)
+        if r:
+            r.claude_draft   = new_draft
+            r.revision_count = (r.revision_count or 0) + 1
+
+
+def update_reply_telegram_id(reply_id: int, telegram_message_id: int):
+    with session_scope() as s:
+        r = s.get(PendingReply, reply_id)
+        if r:
+            r.telegram_message_id = telegram_message_id
+
+
+def get_pending_by_telegram_id(telegram_message_id: int) -> Optional[PendingReply]:
+    """Look up a PendingReply by the telegram message id we sent for it."""
+    with session_scope() as s:
+        return s.execute(
+            select(PendingReply).where(PendingReply.telegram_message_id == telegram_message_id)
+        ).scalar_one_or_none()
+
+
+def get_latest_waiting() -> Optional[PendingReply]:
+    """Most recent waiting reply — used when Asi sends a command without thread."""
+    with session_scope() as s:
+        return s.execute(
+            select(PendingReply).where(PendingReply.status == "waiting")
+                                 .order_by(PendingReply.created_at.desc())
+                                 .limit(1)
+        ).scalar_one_or_none()

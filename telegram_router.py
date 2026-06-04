@@ -1,0 +1,247 @@
+"""
+telegram_router.py — ‫שליחה ופירוש פקודות מ-Telegram.‬
+
+‫שולח אליך טיוטות → ‏אתה משיב "שלח" / "שנה: X" / "עצור" → ‏מתפעלים את הזרימה.‬
+
+‫**שליחת הודעה לאסי** (outgoing) — ‏עובד עם הbot הקיים (TELEGRAM_BOT_TOKEN).‬
+‫**קבלת תגובה מאסי** (incoming) — ‏דרך POST /telegram-webhook ‏(ראה main.py).‬
+"""
+from __future__ import annotations
+
+import os
+import re
+import logging
+import requests
+from typing import Optional
+
+from db import (
+    PendingReply, get_pending_reply, mark_reply_sent, mark_reply_cancelled,
+    update_reply_draft, get_latest_waiting, set_mobile_mode, get_mobile_mode,
+)
+
+log = logging.getLogger("stock_watcher.telegram_router")
+
+TELEGRAM_BOT_TOKEN     = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_TASKS_CHAT_ID = os.environ.get("TELEGRAM_TASKS_CHAT_ID", "")
+# Only Asi's chat_id can send commands — security check.
+ALLOWED_CHAT_IDS = {
+    int(TELEGRAM_TASKS_CHAT_ID) if TELEGRAM_TASKS_CHAT_ID.isdigit() else None,
+} - {None}
+
+
+def _send(text: str, reply_to: Optional[int] = None,
+          parse_mode: str = "HTML") -> Optional[int]:
+    """Send a Telegram message. Returns message_id on success."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_TASKS_CHAT_ID:
+        log.warning("Telegram env missing — skip send")
+        return None
+    payload = {
+        "chat_id":    int(TELEGRAM_TASKS_CHAT_ID),
+        "text":       text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+    }
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
+    r = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        json=payload, timeout=15,
+    )
+    if r.status_code != 200 or not r.json().get("ok"):
+        log.error(f"Telegram send failed: {r.status_code} {r.text[:200]}")
+        return None
+    return r.json()["result"]["message_id"]
+
+
+def send_draft_to_asi(reply: PendingReply) -> Optional[int]:
+    """
+    ‫שולח לאסי הודעת טיוטה — ‏עם summary + ‏draft + ‏אפשרויות תגובה.‬
+    """
+    body = (
+        f"📥 <b>שיחה חדשה — {reply.customer_name}</b>\n"
+        f"<code>{reply.customer_phone}</code>\n\n"
+        f"💬 <i>הודעת הלקוח:</i>\n"
+        f"\"{reply.customer_message}\"\n\n"
+        f"✨ <i>הקשר:</i>\n"
+        f"{reply.context_summary}\n\n"
+        f"📝 <b>טיוטה (#REPLY-{reply.id}):</b>\n"
+        f"<code>{_escape_html(reply.claude_draft)}</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"✏️ ענה: <b>שלח</b> / <b>שנה: ...</b> / <b>עצור</b>"
+    )
+    return _send(body)
+
+
+def send_confirmation(reply: PendingReply, status: str) -> None:
+    if status == "sent":
+        _send(f"✅ נשלח ל-{reply.customer_name} (#{reply.id}).")
+    elif status == "cancelled":
+        _send(f"🚫 בוטל (#{reply.id}). הלקוח יחכה לטיפול ידני.")
+
+
+def send_edit_confirmation(reply: PendingReply) -> Optional[int]:
+    """After Asi requested an edit and Claude re-drafted."""
+    body = (
+        f"✏️ <b>טיוטה מעודכנת (#REPLY-{reply.id}):</b>\n"
+        f"<code>{_escape_html(reply.claude_draft)}</code>\n\n"
+        f"✏️ ענה: <b>שלח</b> / <b>שנה: ...</b> / <b>עצור</b>"
+    )
+    return _send(body)
+
+
+def send_mobile_status(active: bool) -> None:
+    if active:
+        _send("📲 <b>מצב נייד פעיל.</b>\n"
+              "אאזין להודעות חדשות מ-WhatsApp ואשלח טיוטות לכל אחת.\n\n"
+              "כיבוי: <i>אורי, חזרתי</i>")
+    else:
+        _send("📱 <b>מצב רגיל.</b> ה-poller נעצר.\n"
+              "כל ההודעות מהלקוחות יחכו לטיפול ידני ב-Inbox.")
+
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special chars for Telegram parse_mode=HTML."""
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Incoming command parsing
+# ─────────────────────────────────────────────────────────────────────
+
+# Match #REPLY-N in text (Asi can reference a specific draft)
+_REPLY_REF_RE = re.compile(r"#REPLY[-\s]?(\d+)|#(\d+)", re.IGNORECASE)
+
+# Mode commands
+_ACTIVATE_RE = re.compile(
+    r"(אורי.*בחוץ|אני בחוץ|מצב נייד|mobile mode on|listen)",
+    re.IGNORECASE,
+)
+_DEACTIVATE_RE = re.compile(
+    r"(אורי.*חזרתי|חזרתי|במשרד|מצב רגיל|mobile mode off|stop listening)",
+    re.IGNORECASE,
+)
+
+# Action commands
+_SEND_RE   = re.compile(r"^שלח\b|^send\b", re.IGNORECASE)
+_CANCEL_RE = re.compile(r"^עצור\b|^בטל\b|^cancel\b", re.IGNORECASE)
+_EDIT_RE   = re.compile(r"^שנה\s*[:\-]?\s*(.+)|^edit\s*[:\-]?\s*(.+)", re.IGNORECASE | re.DOTALL)
+
+
+def parse_command(text: str) -> dict:
+    """
+    Parse Asi's message into a structured command.
+
+    Returns one of:
+      {"action": "activate"}
+      {"action": "deactivate"}
+      {"action": "send",   "reply_id": int|None}
+      {"action": "cancel", "reply_id": int|None}
+      {"action": "edit",   "reply_id": int|None, "instructions": str}
+      {"action": "unknown"}
+    """
+    text = (text or "").strip()
+    if not text:
+        return {"action": "unknown"}
+
+    # 1) Mode toggles
+    if _ACTIVATE_RE.search(text):
+        return {"action": "activate"}
+    if _DEACTIVATE_RE.search(text):
+        return {"action": "deactivate"}
+
+    # 2) Extract optional #REPLY-N reference
+    reply_id = None
+    m = _REPLY_REF_RE.search(text)
+    if m:
+        reply_id = int(m.group(1) or m.group(2))
+
+    # 3) Action commands
+    if _SEND_RE.search(text):
+        return {"action": "send", "reply_id": reply_id}
+    if _CANCEL_RE.search(text):
+        return {"action": "cancel", "reply_id": reply_id}
+
+    m = _EDIT_RE.search(text)
+    if m:
+        instructions = (m.group(1) or m.group(2) or "").strip()
+        return {"action": "edit", "reply_id": reply_id, "instructions": instructions}
+
+    return {"action": "unknown"}
+
+
+def handle_command(text: str, chat_id: int) -> dict:
+    """
+    ‫מבצע את הפקודה שאסי שלח. ‏מחזיר dict עם תוצאה.‬
+    """
+    # Security: only allow whitelisted chat_ids
+    if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
+        log.warning(f"Unauthorized command from chat_id={chat_id}")
+        return {"ok": False, "error": "unauthorized"}
+
+    cmd = parse_command(text)
+    action = cmd.get("action")
+
+    # ─── Mode toggles ───
+    if action == "activate":
+        m = set_mobile_mode(True)
+        send_mobile_status(True)
+        return {"ok": True, "action": "activate", "active": bool(m.active)}
+
+    if action == "deactivate":
+        m = set_mobile_mode(False)
+        send_mobile_status(False)
+        return {"ok": True, "action": "deactivate", "active": bool(m.active)}
+
+    # ─── Action on a pending reply ───
+    reply_id = cmd.get("reply_id")
+    reply = get_pending_reply(reply_id) if reply_id else get_latest_waiting()
+    if not reply or reply.status != "waiting":
+        _send(f"❓ לא מצאתי טיוטה ממתינה לאישור. השליחה / ביטול לא בוצעו.")
+        return {"ok": False, "error": "no_waiting_reply"}
+
+    if action == "send":
+        from shared.connectop_client import ConnectOpClient
+        try:
+            co = ConnectOpClient.from_env()
+            co.send_text_as_human(reply.customer_phone, reply.claude_draft)
+            mark_reply_sent(reply.id)
+            send_confirmation(reply, "sent")
+            return {"ok": True, "action": "send", "reply_id": reply.id}
+        except Exception as e:
+            log.exception(f"send failed: {e}")
+            _send(f"❌ שליחה נכשלה: {e}")
+            return {"ok": False, "error": str(e)}
+
+    if action == "cancel":
+        mark_reply_cancelled(reply.id)
+        send_confirmation(reply, "cancelled")
+        return {"ok": True, "action": "cancel", "reply_id": reply.id}
+
+    if action == "edit":
+        instructions = cmd.get("instructions", "")
+        try:
+            from mobile_assistant import draft_response
+            # Re-draft with the edit instructions appended as context
+            edit_msg = f"{reply.customer_message}\n\n[בקשת אסי לעריכה: {instructions}]"
+            from shared.chatrace_dashboard_client import ChatRaceDashboardClient
+            dc = ChatRaceDashboardClient.from_env()
+            _, new_draft = draft_response(
+                reply.customer_phone, reply.customer_name, edit_msg, dashboard=dc,
+            )
+            update_reply_draft(reply.id, new_draft)
+            # Reload to get fresh draft
+            reply = get_pending_reply(reply.id)
+            send_edit_confirmation(reply)
+            return {"ok": True, "action": "edit", "reply_id": reply.id}
+        except Exception as e:
+            log.exception(f"edit failed: {e}")
+            _send(f"❌ עריכה נכשלה: {e}")
+            return {"ok": False, "error": str(e)}
+
+    # ─── Unknown command ───
+    _send(
+        "❓ לא הבנתי. אפשרויות:\n"
+        "• <b>אורי, אני בחוץ</b> / <b>אורי, חזרתי</b> — toggle\n"
+        "• <b>שלח</b> / <b>עצור</b> / <b>שנה: ...</b> — על טיוטה ממתינה"
+    )
+    return {"ok": False, "error": "unknown_command"}
