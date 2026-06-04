@@ -242,10 +242,34 @@ def handle_command(text: str, chat_id: int) -> dict:
             _send(f"❌ עריכה נכשלה: {e}")
             return {"ok": False, "error": str(e)}
 
-    # ─── Unknown command ───
-    _send(
-        "❓ לא הבנתי. אפשרויות:\n"
-        "• <b>אורי, אני בחוץ</b> / <b>אורי, חזרתי</b> — toggle\n"
-        "• <b>שלח</b> / <b>עצור</b> / <b>שנה: ...</b> — על טיוטה ממתינה"
-    )
-    return {"ok": False, "error": "unknown_command"}
+    # ─── Free-form query → ‫עובר ל-Claude כשאלה כללית ───
+    # ‫כל הודעה שלא תאמה לפקודה (activate/deactivate/send/cancel/edit)‬
+    # ‫מטופלת ‏כשאילתה ‏(לדוגמה: ‏"אורי מה יש לנו מ-Oppo X9 Ultra?"). ‏אורי‬
+    # ‫עונה ישירות עם נתונים מ-WC + ‏NewOrder.‬
+    return _handle_query(text)
+
+
+def _handle_query(question: str) -> dict:
+    """‫עונה לשאלה כללית של אסי דרך טלגרם.‬"""
+    from mobile_assistant import answer_query
+    from shared.chatrace_dashboard_client import ChatRaceDashboardClient
+
+    # ‫הודעה מקדימה — ‫שיהיה משוב חזותי שאנחנו עובדים‬
+    _send("🔍 <i>חושב...</i>")
+
+    try:
+        dc = ChatRaceDashboardClient.from_env()
+    except Exception:
+        dc = None
+
+    try:
+        answer = answer_query(question, dashboard=dc)
+        # ‫שולח את התשובה — ‫מוגבל ל-4000 ‏תווים מסוג HTML של Telegram‬
+        if len(answer) > 4000:
+            answer = answer[:3900] + "\n\n<i>(תשובה ארוכה — קוצרה)</i>"
+        _send(answer)
+        return {"ok": True, "action": "query", "answer_length": len(answer)}
+    except Exception as e:
+        log.exception(f"query failed: {e}")
+        _send(f"❌ שגיאה במתן תשובה: <code>{_escape_html(str(e))}</code>")
+        return {"ok": False, "error": str(e)}

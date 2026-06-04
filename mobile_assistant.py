@@ -98,11 +98,22 @@ CLAUDE_TOOLS = [
     },
     {
         "name": "check_stock_at_branches",
-        "description": "‫בודק מלאי פיזי לפי שם מוצר בכל הסניפים הפיזיים. ‫מחזיר כמות לכל סניף.",
+        "description": (
+            "‫בודק מלאי פיזי בכל הסניפים. ‫מחזיר את כל הוריאציות התואמות "
+            "‫(צבעים, ‫קיבולות, ‫גרסאות) עם total + ‫by_branch לכל אחת.\n\n"
+            "‫**חשוב**: ‫השתמש ב-query קצר מ-1-3 ‏מילים — ‫שם הדגם בלבד "
+            "‫(לדוגמה 'Galaxy S25', 'iPhone 16', 'Find X9 Ultra'). ‫אל תכלול "
+            "‫שמות כמו 'טלפון סלולרי' או 'סמארטפון' או מתארי קיבולת/RAM/צבע — "
+            "‫הtool יחזיר את כל הוריאציות והאחיות גם בלעדיהם. ‫שאילתה ארוכה "
+            "‫מדי תחזיר רשימה ריקה."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "product_name": {"type": "string", "description": "‫שם המוצר במלא כפי שמופיע ב-NewOrder"},
+                "product_name": {
+                    "type": "string",
+                    "description": "‫קצר וממוקד — ‫רק שם הדגם, ‫1-3 ‏מילים (לדוגמה 'Find X9 Ultra', 'iPhone 16', 'AirTag')"
+                },
             },
             "required": ["product_name"],
         },
@@ -147,21 +158,25 @@ def _tool_search_product(query: str) -> str:
 
 
 def _tool_check_stock(product_name: str) -> str:
-    """NewOrder stock per branch."""
+    """NewOrder stock per branch. Returns up to 20 matching products."""
     from shared.neworder_client import NewOrderClient
     nc = NewOrderClient.from_env()
     branch_names = {1:"גן העיר", 2:"סטאר", 3:"מחסן", 4:"עד הלום", 5:"אתר"}
     products = nc.get_products(search=product_name)
     out = []
-    for p in products[:5]:
+    # 20 matches — enough to cover all variants of a single model (colors + sizes)
+    for p in products[:20]:
         pid = p.get('id')
         stock = nc.get_product_stock(pid) if pid else {}
+        # ‫סוכם כמות בסה"כ — ‫אם הכל אזל, ‏Claude יודע ‏מיד.‬
+        total = sum(int(q) for q in stock.values() if q and q > 0)
         out.append({
-            "name":    p.get('name'),
-            "id":      pid,
-            "price":   p.get('price'),
+            "name":      p.get('name'),
+            "id":        pid,
+            "price":     p.get('price'),
+            "total":     total,
             "by_branch": {branch_names.get(int(b), str(b)): int(q)
-                          for b, q in stock.items() if q is not None},
+                          for b, q in stock.items() if q is not None and q > 0},
         })
     return json.dumps(out, ensure_ascii=False)
 
@@ -261,6 +276,93 @@ def draft_response(phone: str, customer_name: str, customer_message: str,
     # extraction strategies before giving up.
     summary, draft = _extract_summary_draft(final_text)
     return summary, draft
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Ad-hoc Q&A — ‫אסי שואל את Claude שאלה כללית בטלגרם‬
+# ─────────────────────────────────────────────────────────────────────
+
+QUERY_SYSTEM_PROMPT = """\
+‫אתה אורי, ‏עוזר AI של אסי, ‏הבעלים של Green Mobile. ‏הוא שאל אותך שאלה בטלגרם.‬
+
+‫אסי הוא בעל החנות — ‫עונה לו ישירות, בלי פתיחים שיווקיים. ‏השתמש בכלים‬
+‫(חיפוש מוצר, בדיקת מלאי, היסטוריית שיחה) כדי לאסוף נתונים אמיתיים.‬
+
+‫**פורמט תשובה ב-Telegram**:‬
+
+- ‫עברית מלאה, ‏ענייני, ‏ללא פלאף.‬
+- ‫השתמש ב-HTML של Telegram: ‏`<b>bold</b>`, ‏`<i>italic</i>`, ‏`<code>code</code>`.‬
+- ‫טבלאות → ‏רשימות עם bullets ‏(`•`) ‫או שורות עם `<code>` ‏ליישור.‬
+- ‫אמוג'ים לסמלים: ‏✅ ‫זמין | ‏❌ ‫אזל | ‏⚠️ ‫חריג | ‏📦 ‫הזמנה.‬
+- ‫אם יש פערים בין WC ל-NewOrder — ‫ציין במפורש (זה תכנון, ‏לא באג).‬
+- ‫אם יש מספר וריאציות — ‫טבלה עם מחיר + ‫מלאי לכל אחת.‬
+- ‫אם נשאלת על מלאי — ‫תמיד ציין סניף ספציפי וכמות.‬
+- ‫אם לא מצאת — ‫אמור "לא נמצא במערכת" + ‏הצעת תיקון שאילתה אם רלוונטי.‬
+
+‫**אל תוסיף JSON, אל תוסיף סוגריים מסולסלים** — ‫תחזיר HTML טקסט ישר.‬
+‫כן, תוכל להוסיף שורה ראשונה עם הסיכום אם רוצה, ‏אבל לא חובה.‬
+
+## ‫⚠️ ‏קריאת מלאי — ‫קרא בקפדנות!‬
+
+‫כשמשתמש ב-`check_stock_at_branches`, ‫הtool מחזיר רשימה של מוצרים. ‏לכל אחד:‬
+
+- ‫`total` — ‫סך כמות פיזית בכל הסניפים (אם 0 = ‫אזל לגמרי, ‫אם > 0 = ‫**יש מלאי**)‬
+- ‫`by_branch` — ‫dict עם סניפים שיש בהם stock > 0 (אם ריק = ‫אזל)‬
+
+‫**אם `total > 0` או `by_branch` לא ריק — ‫זה מוצר שיש לנו במלאי!**‬
+
+‫סטטוס ה-WC ("instock") ‫לא תמיד אומר ‏שיש פיזית בסניף — ‫מוצרים `external` ‫הם מהיבואן.‬
+‫הסטטוס הקובע למלאי **פיזי** ‫הוא של NewOrder ‏(הtotal של ה-`check_stock_at_branches`).‬
+
+‫**מטבע: ‫₪ (שקל), ‫לא ₹ (רופי). ‏וודא לכתוב נכון.**‬
+
+‫**שמות סניפים**: ‫השתמש בשם המלא בעברית כפי שמופיע ב-by_branch ‏(לדוגמה: ‏"סטאר", ‏"גן העיר", ‏"עד הלום", ‏"מחסן").‬
+"""
+
+
+def answer_query(question: str, dashboard=None) -> str:
+    """
+    ‫עונה לשאלה כללית של אסי דרך טלגרם. ‏מחזיר טקסט HTML מוכן לשליחה.‬
+    ‫אם Claude API לא זמין → ‏fallback פשוט.‬
+    """
+    client = _get_client()
+    if not client:
+        return "⚠️ Claude API לא זמין — לא יכול לענות"
+
+    messages = [{"role": "user", "content": question}]
+
+    final_text = None
+    for turn in range(8):
+        resp = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=2000,
+            system=QUERY_SYSTEM_PROMPT,
+            tools=CLAUDE_TOOLS,
+            messages=messages,
+        )
+
+        tool_uses = [b for b in resp.content if b.type == "tool_use"]
+        if tool_uses:
+            messages.append({"role": "assistant", "content": resp.content})
+            tool_results = []
+            for tu in tool_uses:
+                # For queries, we don't have a "current customer phone" — use empty
+                output = _run_tool(tu.name, tu.input, phone="", dashboard=dashboard)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": output,
+                })
+            messages.append({"role": "user", "content": tool_results})
+            continue
+
+        text_blocks = [b for b in resp.content if b.type == "text"]
+        final_text = "".join(b.text for b in text_blocks)
+        break
+
+    if not final_text:
+        return "⚠️ לא הצלחתי לסיים את התשובה (יותר מדי tool turns)"
+    return final_text
 
 
 def _extract_summary_draft(text: str) -> Tuple[str, str]:
