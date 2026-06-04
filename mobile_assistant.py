@@ -153,6 +153,25 @@ CLAUDE_TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "get_customer_orders",
+        "description": (
+            "‫מושך את כל הזמנות הלקוח מ-WooCommerce לפי טלפון. ‫מחזיר רשימה של "
+            "‫הזמנות עם מספר, ‫סטטוס (processing/completed/cancelled/on-hold), ‫תאריך, ‫סכום, "
+            "‫שיטת משלוח, ‫ומוצרים בהזמנה. ‫**השתמש בזה תמיד כשאסי שואל על "
+            "‫'היסטוריה' של לקוח** — ‫כדי שהתמונה תכלול גם הזמנות פעילות באתר."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {
+                    "type": "string",
+                    "description": "‫טלפון של הלקוח (בכל פורמט — ‫הtool ינסה וריאציות בעצמו)"
+                },
+            },
+            "required": ["phone"],
+        },
+    },
 ]
 
 
@@ -230,6 +249,67 @@ def _tool_get_history(phone: str, dashboard) -> str:
     return json.dumps(out, ensure_ascii=False)
 
 
+def _tool_get_customer_orders(phone: str) -> str:
+    """
+    ‫שולף את כל הזמנות הלקוח מ-WC לפי טלפון. ‫מנסה כמה וריאציות של המספר‬
+    ‫(972..., 0..., +972...) ‫כי לקוחות מזינים פורמטים שונים.‬
+    """
+    import requests as _req
+    WC = os.environ['WC_STORE_URL'].rstrip('/')
+    WC_AUTH = (os.environ['WC_CONSUMER_KEY'], os.environ['WC_CONSUMER_SECRET'])
+    H = {"User-Agent":"Mozilla/5.0"}
+
+    # ‫נורמליזציה — ‫קח רק ספרות, ‫בנה וריאציות סבירות‬
+    digits = "".join(c for c in str(phone) if c.isdigit())
+    variants = {digits}
+    if digits.startswith("972") and len(digits) > 3:
+        local = digits[3:]
+        variants.add(local)              # 547344118
+        variants.add("0" + local)        # 0547344118
+        variants.add("+" + digits)       # +972547344118
+    elif digits.startswith("0"):
+        variants.add("972" + digits[1:])
+        variants.add(digits[1:])
+    elif len(digits) >= 9:
+        variants.add("972" + digits)
+        variants.add("0" + digits)
+
+    # ‫חיפוש: ‫WC search ‏מחפש בשדות כולל billing.phone‬
+    found = {}
+    for v in variants:
+        try:
+            r = _req.get(f"{WC}/wp-json/wc/v3/orders",
+                         params={"search": v, "per_page": 20, "orderby":"date","order":"desc"},
+                         auth=WC_AUTH, timeout=15, headers=H)
+            if r.status_code == 200:
+                for o in r.json():
+                    # ‫אמת שזו באמת ההזמנה של המספר ‏(WC search ‏רחב מדי)‬
+                    billing_phone = "".join(c for c in (o.get("billing",{}).get("phone","") or "") if c.isdigit())
+                    if billing_phone and (billing_phone in digits or digits in billing_phone or v in billing_phone):
+                        found[o['id']] = o
+        except Exception:
+            pass
+
+    # ‫סדר לפי תאריך, ‫סכם פרטים‬
+    orders_list = sorted(found.values(), key=lambda o: o.get("date_created",""), reverse=True)
+    out = []
+    for o in orders_list[:15]:
+        b = o.get("billing", {})
+        items = [it.get("name","")[:60] for it in (o.get("line_items") or [])]
+        out.append({
+            "id":       o["id"],
+            "status":   o.get("status"),
+            "date":     (o.get("date_created") or "")[:16].replace("T", " "),
+            "total":    f"{o.get('total','?')} {o.get('currency','ILS')}",
+            "customer": f"{b.get('first_name','')} {b.get('last_name','')}".strip(),
+            "phone":    b.get("phone",""),
+            "city":     b.get("city",""),
+            "shipping": (o.get("shipping_lines") or [{}])[0].get("method_title","?"),
+            "items":    items,
+        })
+    return json.dumps({"orders_found": len(out), "orders": out}, ensure_ascii=False)
+
+
 def _tool_find_customer(query: str, dashboard) -> str:
     """Search the ConnectOp inbox for customers matching a name/phone fragment."""
     from datetime import datetime, timezone, timedelta
@@ -276,6 +356,8 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
             return _tool_get_history(requested_phone, dashboard)
         if name == "find_customer":
             return _tool_find_customer(args.get("query",""), dashboard)
+        if name == "get_customer_orders":
+            return _tool_get_customer_orders(args.get("phone",""))
         return json.dumps({"error": f"unknown tool {name}"}, ensure_ascii=False)
     except Exception as e:
         log.exception(f"tool {name} failed: {e}")
@@ -390,6 +472,27 @@ QUERY_SYSTEM_PROMPT = """\
 ‫**מטבע: ‫₪ (שקל), ‫לא ₹ (רופי). ‏וודא לכתוב נכון.**‬
 
 ‫**שמות סניפים**: ‫השתמש בשם המלא בעברית כפי שמופיע ב-by_branch ‏(לדוגמה: ‏"סטאר", ‏"גן העיר", ‏"עד הלום", ‏"מחסן").‬
+
+## ‫🔍 ‫**מתי להשתמש בכל כלי**‬
+
+‫**"היסטוריה של לקוח X" / "ספר לי על X" / "מה הסטטוס של X"** —‬
+‫תמיד הפעל את שלושת הכלים האלה במקביל (parallel tool calls):‬
+
+- ‫`find_customer(query)` — ‫אם יש שם בלבד (למצוא טלפון)‬
+- ‫`get_conversation_history(phone)` — ‫שיחות WhatsApp‬
+- ‫`get_customer_orders(phone)` — ‫**הזמנות פעילות וקודמות באתר** ‏(WC)‬
+
+‫**הצג את התמונה המלאה**: ‫שיחות + ‫הזמנות פעילות + ‫הזמנות עבר. ‫זה קריטי עבור אסי כשהוא בחוץ — ‫בלי גישה למחשב, ‫הוא צריך לדעת אם ללקוח יש הזמנה פעילה.‬
+
+## ‫📦 ‫**פורמט סטטוסי הזמנות (WC)**‬
+
+- ‫`processing` — ‫בטיפול 🔄 ‫(שולם, ‫עוד לא יצא)‬
+- ‫`on-hold` — ‫ממתין לאישור ⏸️‬
+- ‫`completed` — ‫הושלם ✅ ‫(נמסר ללקוח)‬
+- ‫`cancelled` — ‫בוטל ❌‬
+- ‫`refunded` — ‫זוכה 💸‬
+- ‫`pending` — ‫ממתין לתשלום 💳‬
+- ‫`failed` — ‫תשלום נכשל ⚠️‬
 """
 
 
