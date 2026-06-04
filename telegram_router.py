@@ -19,6 +19,7 @@ from db import (
     update_reply_draft, get_latest_waiting, set_mobile_mode, get_mobile_mode,
     get_pending_by_telegram_id,
     record_telegram_message, get_recent_telegram_messages,
+    find_telegram_message_by_id,
 )
 
 log = logging.getLogger("stock_watcher.telegram_router")
@@ -195,7 +196,8 @@ def parse_command(text: str) -> dict:
 
 
 def handle_command(text: str, chat_id: int,
-                    reply_to_telegram_msg_id: Optional[int] = None) -> dict:
+                    reply_to_telegram_msg_id: Optional[int] = None,
+                    incoming_telegram_msg_id: Optional[int] = None) -> dict:
     """
     ‫מבצע את הפקודה שאסי שלח. ‏מחזיר dict עם תוצאה.‬
 
@@ -210,7 +212,8 @@ def handle_command(text: str, chat_id: int,
 
     # ‫שמור את ההודעה לזיכרון השיחה (לפני שמטפלים)‬
     try:
-        record_telegram_message(chat_id, "user", text)
+        record_telegram_message(chat_id, "user", text,
+                                  telegram_msg_id=incoming_telegram_msg_id)
     except Exception as e:
         log.warning(f"failed to record user msg: {e}")
 
@@ -314,13 +317,20 @@ def handle_command(text: str, chat_id: int,
 
     # ─── Free-form query → ‫עובר ל-Claude כשאלה כללית ───
     # ‫כל הודעה שלא תאמה לפקודה (activate/deactivate/send/cancel/edit)‬
-    # ‫מטופלת ‏כשאילתה ‏(לדוגמה: ‏"אורי מה יש לנו מ-Oppo X9 Ultra?"). ‏אורי‬
-    # ‫עונה ישירות עם נתונים מ-WC + ‏NewOrder.‬
-    return _handle_query(text, context=reply_context, chat_id=chat_id)
+    # ‫מטופלת ‏כשאילתה. ‫אם זו תגובה (Reply) ‫להודעת בוט קודמת — ‫נשלוף את התוכן‬
+    # ‫של ההודעה ההיא ונכניס אותה כקונטקסט מרכזי.‬
+    replied_to_text = None
+    if reply_to_telegram_msg_id:
+        tm = find_telegram_message_by_id(chat_id, reply_to_telegram_msg_id)
+        if tm:
+            replied_to_text = tm.text
+    return _handle_query(text, context=reply_context, chat_id=chat_id,
+                          replied_to_text=replied_to_text)
 
 
 def _handle_query(question: str, context: Optional[PendingReply] = None,
-                   chat_id: Optional[int] = None) -> dict:
+                   chat_id: Optional[int] = None,
+                   replied_to_text: Optional[str] = None) -> dict:
     """
     ‫עונה לשאלה כללית של אסי דרך טלגרם.‬
     ‫אם ‏`context` ‫מסופק (אסי הגיב לטיוטה ספציפית) — ‫מוסיף את פרטי הלקוח‬
@@ -346,6 +356,15 @@ def _handle_query(question: str, context: Optional[PendingReply] = None,
             f"‫השאלה / ‫הפקודה שלו מתייחסת ללקוח הזה.]\n\n"
         )
         full_question = prefix + question
+    elif replied_to_text:
+        # ‫אסי הגיב להודעה רגילה — ‫השאלה הנוכחית מתייחסת אליה.‬
+        prefix = (
+            f"[‫אסי מגיב להודעה הקודמת שלך:\n\n"
+            f"\"{replied_to_text[:1500]}\"\n\n"
+            f"‫שאלתו הנוכחית מתייחסת ‫**ישירות** ‫להודעה למעלה. "
+            f"‫אל תשאל 'על איזה מוצר/לקוח' — ‫זה מה שמופיע למעלה.]\n\n"
+        )
+        full_question = prefix + question
 
     # ‫שלוף 5 ‏הודעות אחרונות בchat לזיכרון שיחה‬
     # ‫(מסיר את ההודעה הנוכחית — ‫היא תהיה ה-input)‬
@@ -364,10 +383,11 @@ def _handle_query(question: str, context: Optional[PendingReply] = None,
         if len(answer) > 4000:
             answer = answer[:3900] + "\n\n<i>(תשובה ארוכה — קוצרה)</i>"
         msg_id = _send(answer)
-        # ‫שמור את התשובה לזיכרון השיחה‬
+        # ‫שמור את התשובה לזיכרון השיחה (כולל message_id כדי שאסי יוכל לעשות Reply)‬
         if chat_id is not None:
             try:
-                record_telegram_message(chat_id, "assistant", answer[:2000])
+                record_telegram_message(chat_id, "assistant", answer[:4000],
+                                          telegram_msg_id=msg_id)
             except Exception as e:
                 log.warning(f"failed to record assistant msg: {e}")
         return {"ok": True, "action": "query", "answer_length": len(answer)}

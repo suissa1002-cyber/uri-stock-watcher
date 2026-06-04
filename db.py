@@ -88,16 +88,20 @@ class TelegramMessage(Base):
     ‫זיכרון שיחה לחילופי דברים בטלגרם.‬
     ‫אנחנו שומרים את ההודעות של אסי + ‫תשובות הבוט, ‫כדי שClaude יוכל לקבל‬
     ‫הקשר משיחה רב-הודעתית (לדוגמה: ‫"לקוח X" → ‫"מה הכתובת שלו").‬
+
+    ‫כל ‫message_id (אם זמין) ‫נשמר — ‫כשAsi עושה Reply ‫על הודעה ספציפית,‬
+    ‫אנחנו יכולים למצוא את התוכן שלה ולתת אותו לClaude כקונטקסט מרכזי.‬
     ‫מנקים אוטומטית הודעות בנות יותר מ-2 ‏שעות.‬
     """
     __tablename__ = "telegram_messages"
 
-    id          = Column(Integer, primary_key=True)
-    chat_id     = Column(BigInteger, nullable=False, index=True)
-    role        = Column(String(20), nullable=False)  # 'user' | 'assistant'
-    text        = Column(Text, nullable=False)
-    ts          = Column(DateTime, default=lambda: datetime.now(timezone.utc),
-                         nullable=False, index=True)
+    id              = Column(Integer, primary_key=True)
+    chat_id         = Column(BigInteger, nullable=False, index=True)
+    role            = Column(String(20), nullable=False)  # 'user' | 'assistant'
+    text            = Column(Text, nullable=False)
+    telegram_msg_id = Column(BigInteger, nullable=True, index=True)
+    ts              = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                              nullable=False, index=True)
 
 
 class ScheduledAction(Base):
@@ -422,7 +426,8 @@ def get_pending_by_telegram_id(telegram_message_id: int) -> Optional[PendingRepl
         ).scalar_one_or_none()
 
 
-def record_telegram_message(chat_id: int, role: str, text: str) -> None:
+def record_telegram_message(chat_id: int, role: str, text: str,
+                              telegram_msg_id: int = None) -> None:
     """‫שומר הודעת טלגרם להקשר. ‫מנקה הודעות ישנות מ-2 ‏שעות.‬"""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
     with session_scope() as s:
@@ -430,7 +435,21 @@ def record_telegram_message(chat_id: int, role: str, text: str) -> None:
         from sqlalchemy import delete
         s.execute(delete(TelegramMessage).where(TelegramMessage.ts < cutoff))
         # ‫הוסף חדש‬
-        s.add(TelegramMessage(chat_id=chat_id, role=role, text=text[:4000]))
+        s.add(TelegramMessage(
+            chat_id=chat_id, role=role, text=text[:4000],
+            telegram_msg_id=telegram_msg_id,
+        ))
+
+
+def find_telegram_message_by_id(chat_id: int, telegram_msg_id: int):
+    """‫מחזיר את הודעת הטלגרם הספציפית (אם נמצאה) לקונטקסט Reply.‬"""
+    with session_scope() as s:
+        return s.execute(
+            select(TelegramMessage).where(
+                TelegramMessage.chat_id == chat_id,
+                TelegramMessage.telegram_msg_id == telegram_msg_id,
+            )
+        ).scalar_one_or_none()
 
 
 def get_recent_telegram_messages(chat_id: int, limit: int = 10,
