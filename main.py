@@ -158,6 +158,24 @@ def remind_tasks_endpoint(dry_run: bool = False):
 
 # ─── Mobile mode endpoints ──────────────────────────────────────────
 
+@app.get("/scheduled-actions", dependencies=[Depends(require_token)])
+def list_scheduled_actions(status: str = "pending"):
+    """‫רשימה של פעולות מתוזמנות (לדיבאג + ‫שקיפות לאסי).‬"""
+    from db import session_scope, ScheduledAction
+    from sqlalchemy import select
+    with session_scope() as s:
+        q = select(ScheduledAction).order_by(ScheduledAction.id.desc()).limit(50)
+        if status and status != "all":
+            q = q.where(ScheduledAction.status == status)
+        rows = s.execute(q).scalars().all()
+        return {"count": len(rows), "actions": [
+            {"id":a.id,"type":a.action_type,"phone":a.target_phone,
+             "name":a.target_name,"due_at":a.due_at.isoformat() if a.due_at else None,
+             "status":a.status,"note":(a.note or "")[:200]}
+            for a in rows
+        ]}
+
+
 @app.get("/mobile-mode/status", dependencies=[Depends(require_token)])
 def mobile_status():
     """‫סטטוס נוכחי של המצב הנייד.‬"""
