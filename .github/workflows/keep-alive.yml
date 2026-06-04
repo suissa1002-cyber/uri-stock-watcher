@@ -1,0 +1,23 @@
+# Keep-alive — pings /health every 10 minutes so Render Free doesn't sleep.
+# (Render Free spins down after 15 min idle; this stays under the limit.)
+name: keep-alive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # every 10 minutes
+  workflow_dispatch:          # allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: |
+          SERVICE_URL="${{ secrets.SERVICE_URL }}"
+          if [ -z "$SERVICE_URL" ]; then
+            echo "SERVICE_URL secret not set — skipping"
+            exit 0
+          fi
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/health" --max-time 30)
+          echo "GET $SERVICE_URL/health → $status"
+          [ "$status" = "200" ] || exit 1

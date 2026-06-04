@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: uri-stock-watcher
+    runtime: docker
+    region: frankfurt
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: TZ
+        value: Asia/Jerusalem
+      - key: CRON_HOUR
+        value: "9"
+      - key: CRON_DAYS
+        value: "0-4"
+      # ─── Set the rest in Render UI / via blueprint sync ───
+      # - STOCK_WATCHER_TOKEN (random secret — used as Bearer auth)
+      # - DATABASE_URL (Neon Postgres connection string, postgres:// → postgresql:// auto-converted)
+      # - NEWORDER_API_TOKEN
+      # - NEWORDER_BASE_URL (optional, default https://api.neworder.co.il)
+      # - CHATRACE_DASHBOARD_TOKEN
+      # - CHATRACE_DASHBOARD_ACCOUNT_ID
+      # If DATABASE_URL is NOT set, the service falls back to SQLite at /data/stock_watcher.db.
+      # For Render Free that means data is lost on every deploy — Postgres recommended.

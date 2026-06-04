@@ -1,0 +1,180 @@
+"""
+main.py — ‫השירות עצמו: FastAPI + APScheduler.‬
+
+Endpoints:
+    GET  /health                  → UptimeRobot ping endpoint (no auth)
+    POST /watch                   → ‫הוסף לקוח לרשימה‬ (Bearer auth)
+    GET  /watches                 → ‫הצג את כל הרשומות‬ (Bearer auth)
+    DELETE /watches/{id}          → ‫בטל מעקב‬ (Bearer auth)
+    POST /run-check               → ‫הרץ בדיקה ידנית עכשיו‬ (Bearer auth)
+    GET  /                        → ‫עמוד דף נחיתה פשוט עם status‬
+
+Scheduler:
+    ‫רץ בכל יום ב-09:00 שעון ישראל (Sun-Thu — ‫ימי עסקים).‬
+    ‫אפשר להחליף עם משתנה ‎CRON_HOUR ו-‎CRON_DAYS אם רוצים.‬
+"""
+from __future__ import annotations
+
+import os
+import sys
+import logging
+from datetime import datetime
+from typing import Optional
+
+import pytz
+from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel, Field
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+# Make `shared/*` importable as a top-level package
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT)
+
+from db import init_db, add_watch, list_all_watches, mark_cancelled
+from checker import run_check
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
+log = logging.getLogger("stock_watcher.main")
+
+# ── Config from env ──
+API_TOKEN  = os.environ.get("STOCK_WATCHER_TOKEN", "")
+CRON_HOUR  = int(os.environ.get("CRON_HOUR", "9"))
+# ‫ימי עסקים בישראל: ‫ראשון-חמישי (cron 0-4)‬
+CRON_DOW   = os.environ.get("CRON_DAYS", "0-4")
+TZ_NAME    = os.environ.get("TZ", "Asia/Jerusalem")
+PORT       = int(os.environ.get("PORT", "8000"))
+
+# ── FastAPI app ──
+app = FastAPI(
+    title="Uri Stock Watcher",
+    description="‫שירות מעקב מלאי + ‏שליחת WhatsApp לכשהמוצר חוזר.‬",
+    version="0.1.0",
+)
+
+
+# ── Auth dependency ──
+def require_token(authorization: Optional[str] = Header(None)):
+    if not API_TOKEN:
+        # Token not configured → allow (dev mode). Warn in logs.
+        log.warning("STOCK_WATCHER_TOKEN not set — accepting all requests")
+        return
+    expected = f"Bearer {API_TOKEN}"
+    if authorization != expected:
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+
+# ── Request models ──
+class WatchAddRequest(BaseModel):
+    customer_phone: str = Field(..., description="WhatsApp phone, e.g. '972522514332'")
+    customer_name:  str = Field(..., description="Full name in Hebrew")
+    neworder_id:    int = Field(..., description="NewOrder product id (not SKU)")
+    product_name:   str = Field(..., description="Human-readable product name")
+    product_url:    str = Field("",   description="Link to product page (shortened)")
+    notes:          str = Field("",   description="Free-text notes (color, version, etc.)")
+
+
+# ── Endpoints ──
+@app.get("/health")
+def health():
+    """Pingable by UptimeRobot — no auth, just status."""
+    return {"status": "ok", "ts": datetime.utcnow().isoformat()}
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """Simple landing page."""
+    watches = list_all_watches(limit=50)
+    rows_html = ""
+    for w in watches:
+        rows_html += (
+            f"<tr><td>{w.id}</td><td>{w.customer_name}</td>"
+            f"<td>{w.product_name}</td><td>{w.status}</td>"
+            f"<td>{w.added_at.strftime('%d/%m %H:%M') if w.added_at else ''}</td></tr>"
+        )
+    return f"""
+    <html dir="rtl"><head><meta charset="utf-8"><title>Uri Stock Watcher</title>
+    <style>body{{font-family:system-ui;max-width:900px;margin:40px auto;padding:0 20px}}
+    table{{border-collapse:collapse;width:100%}} th,td{{padding:8px;border-bottom:1px solid #eee;text-align:right}}
+    th{{background:#f6f6f6}}</style></head><body>
+    <h1>Uri Stock Watcher</h1>
+    <p>Cron: <strong>{CRON_HOUR}:00 — ‫ימי {CRON_DOW}</strong> (timezone: {TZ_NAME})</p>
+    <p>‫סך הכל ‏{len(watches)} ‏רשומות אחרונות:</p>
+    <table><thead><tr><th>id</th><th>‫שם</th><th>‫מוצר</th><th>‫סטטוס</th><th>‫נוסף</th></tr></thead>
+    <tbody>{rows_html}</tbody></table>
+    </body></html>
+    """
+
+
+@app.post("/watch", dependencies=[Depends(require_token)])
+def add_watch_endpoint(req: WatchAddRequest):
+    item = add_watch(
+        customer_phone=req.customer_phone,
+        customer_name=req.customer_name,
+        neworder_id=req.neworder_id,
+        product_name=req.product_name,
+        product_url=req.product_url,
+        notes=req.notes,
+    )
+    return item.to_dict()
+
+
+@app.get("/watches", dependencies=[Depends(require_token)])
+def list_watches_endpoint(limit: int = 200):
+    items = list_all_watches(limit=limit)
+    return {"count": len(items), "items": [i.to_dict() for i in items]}
+
+
+@app.delete("/watches/{item_id}", dependencies=[Depends(require_token)])
+def cancel_watch_endpoint(item_id: int):
+    mark_cancelled(item_id)
+    return {"ok": True, "id": item_id, "status": "cancelled"}
+
+
+@app.post("/run-check", dependencies=[Depends(require_token)])
+def run_check_endpoint(dry_run: bool = False):
+    summary = run_check(dry_run=dry_run)
+    return summary
+
+
+# ── Scheduler ──
+_scheduler: Optional[BackgroundScheduler] = None
+
+def start_scheduler():
+    global _scheduler
+    tz = pytz.timezone(TZ_NAME)
+    _scheduler = BackgroundScheduler(timezone=tz)
+    _scheduler.add_job(
+        func=run_check,
+        trigger=CronTrigger(hour=CRON_HOUR, minute=0, day_of_week=CRON_DOW, timezone=tz),
+        id="daily_stock_check",
+        name="Daily stock check at 09:00 IL",
+        replace_existing=True,
+        coalesce=True,           # if missed, run once instead of N times
+        misfire_grace_time=3600, # tolerate up to 1h late
+    )
+    _scheduler.start()
+    log.info(f"Scheduler started — daily {CRON_HOUR}:00 on cron days={CRON_DOW} ({TZ_NAME})")
+
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
+    log.info("Database initialized")
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    if _scheduler:
+        _scheduler.shutdown(wait=False)
+
+
+# ── Entrypoint for `python main.py` (Procfile / Docker CMD) ──
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, log_level="info")
