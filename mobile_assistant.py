@@ -180,24 +180,24 @@ CLAUDE_TOOLS = [
 # ─────────────────────────────────────────────────────────────────────
 
 def _tool_search_product(query: str) -> str:
-    """WC product search."""
+    """WC product search — trimmed to 5 essentials."""
     import requests
     WC = os.environ['WC_STORE_URL'].rstrip('/')
     WC_AUTH = (os.environ['WC_CONSUMER_KEY'], os.environ['WC_CONSUMER_SECRET'])
     r = requests.get(f"{WC}/wp-json/wc/v3/products",
-                     params={"search": query, "per_page": 8},
+                     params={"search": query, "per_page": 6, "_fields":"id,name,price,stock_status,type,permalink"},
                      auth=WC_AUTH, timeout=20,
                      headers={"User-Agent":"Mozilla/5.0"})
     items = r.json() if r.status_code == 200 else []
+    # ‫רק 5 ‏החזרות, ‫שמות מקוצרים, ‫שדות מינימליים‬
     out = []
     for p in items[:5]:
         out.append({
-            "id":         p.get("id"),
-            "name":       p.get("name","")[:100],
-            "price":      p.get("price"),
-            "stock":      p.get("stock_status"),
-            "type":       p.get("type"),
-            "permalink":  p.get("permalink"),
+            "id":   p.get("id"),
+            "name": p.get("name","")[:80],
+            "price": p.get("price"),
+            "stock": p.get("stock_status"),
+            "url":   p.get("permalink"),
         })
     return json.dumps(out, ensure_ascii=False)
 
@@ -392,11 +392,17 @@ def draft_response(phone: str, customer_name: str, customer_message: str,
 
     # Iterate tool calls up to 6 turns
     final_text = None
-    for turn in range(6):
+    for turn in range(5):
         resp = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=2000,
-            system=SYSTEM_PROMPT,
+            max_tokens=1500,
+            # ‫prompt caching: ‫הsystem identical בין קריאות → ‫90% הנחה‬
+            system=[{
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            # ‫גם הtools זהים בין קריאות — ‫cached גם הם‬
             tools=CLAUDE_TOOLS,
             messages=messages,
         )
@@ -508,11 +514,15 @@ def answer_query(question: str, dashboard=None) -> str:
     messages = [{"role": "user", "content": question}]
 
     final_text = None
-    for turn in range(8):
+    for turn in range(6):
         resp = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=2000,
-            system=QUERY_SYSTEM_PROMPT,
+            max_tokens=1500,
+            system=[{
+                "type": "text",
+                "text": QUERY_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
             tools=CLAUDE_TOOLS,
             messages=messages,
         )
