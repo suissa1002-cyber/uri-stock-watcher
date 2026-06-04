@@ -169,6 +169,38 @@ CLAUDE_TOOLS = [
         },
     },
     {
+        "name": "list_scheduled_actions",
+        "description": (
+            "‫מחזיר את כל הפעולות המתוזמנות במערכת — ‫הודעות שיתוזמנו לשליחה, "
+            "‫ארכובים מותנים וכו'. ‫שימושי כשאסי שואל 'יש פעולות פתוחות?' ‫או "
+            "‫'מה תוזמן ל-X?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status_filter": {
+                    "type": "string",
+                    "description": "‫אילו לסנן? 'pending' ‫(ממתינות, ‫ברירת מחדל) / 'done' / 'cancelled' / 'all'",
+                    "enum": ["pending","done","cancelled","skipped","all"],
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "cancel_scheduled_action",
+        "description": (
+            "‫מבטל פעולה מתוזמנת לפי id. ‫שימושי כשאסי משנה דעתו על תזמון שיצר."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action_id": {"type":"integer","description":"‫מזהה הפעולה לביטול"},
+            },
+            "required": ["action_id"],
+        },
+    },
+    {
         "name": "schedule_send_message",
         "description": (
             "‫מתזמן **שליחת הודעת WhatsApp** ‫ללקוח בזמן ספציפי בעתיד. "
@@ -308,6 +340,47 @@ def _tool_archive_conversation(phone: str, dashboard) -> str:
         return json.dumps({"ok": bool(ok), "phone": phone, "archived": True}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _tool_list_scheduled(status_filter: str = "pending") -> str:
+    """List scheduled actions for Asi to see what's queued."""
+    from db import session_scope, ScheduledAction
+    from sqlalchemy import select
+    from datetime import datetime, timezone, timedelta
+    IL = timezone(timedelta(hours=3))
+    with session_scope() as s:
+        q = select(ScheduledAction).order_by(ScheduledAction.due_at.asc()).limit(30)
+        if status_filter and status_filter != "all":
+            q = q.where(ScheduledAction.status == status_filter)
+        rows = s.execute(q).scalars().all()
+    out = []
+    for a in rows:
+        due_local = a.due_at.astimezone(IL).strftime("%d/%m %H:%M") if a.due_at else "?"
+        out.append({
+            "id": a.id,
+            "type": a.action_type,
+            "phone": a.target_phone,
+            "name": a.target_name,
+            "due_at_il": due_local,
+            "status": a.status,
+            "note": (a.note or "")[:200],
+        })
+    return json.dumps({"count": len(out), "actions": out}, ensure_ascii=False)
+
+
+def _tool_cancel_scheduled(action_id: int) -> str:
+    """Cancel a scheduled action by id."""
+    from db import session_scope, ScheduledAction
+    from datetime import datetime, timezone
+    with session_scope() as s:
+        a = s.get(ScheduledAction, int(action_id))
+        if not a:
+            return json.dumps({"ok": False, "error": f"action #{action_id} not found"}, ensure_ascii=False)
+        if a.status != "pending":
+            return json.dumps({"ok": False, "error": f"action #{action_id} status is {a.status}, can't cancel"}, ensure_ascii=False)
+        a.status = "cancelled"
+        a.done_at = datetime.now(timezone.utc)
+        return json.dumps({"ok": True, "id": action_id, "cancelled": True}, ensure_ascii=False)
 
 
 def _tool_schedule_send_message(phone: str, name: str, text: str,
@@ -498,6 +571,10 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
                 args.get("phone",""), args.get("name",""),
                 args.get("text",""), args.get("delay_minutes", 60),
             )
+        if name == "list_scheduled_actions":
+            return _tool_list_scheduled(args.get("status_filter", "pending"))
+        if name == "cancel_scheduled_action":
+            return _tool_cancel_scheduled(args.get("action_id"))
         return json.dumps({"error": f"unknown tool {name}"}, ensure_ascii=False)
     except Exception as e:
         log.exception(f"tool {name} failed: {e}")
