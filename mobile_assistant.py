@@ -777,13 +777,13 @@ def answer_query(question: str, dashboard=None,
         messages.append({"role": role, "content": txt})
     messages.append({"role": "user", "content": question})
 
-    # ‫Sonnet 4.5 — ‫Haiku נכשל ‫בreasoning ‫מורכב (לא חיבר Reply context →‬
-    # ‫search_product → permalink). ‫עדיף ‫עלות גבוהה מ-בוט שבור.‬
-    # ‫עם ‫caching, ‫עלות אמיתית ~$0.02-0.04 לשאילתה.‬
+    # ‫Haiku 4.5 — ‫עם inline Reply context + ‫הוראות מפורשות לקישורים,‬
+    # ‫מתפקד היטב ב-lookups. ‫עלות ~$0.02 לשאילתה → ‫~$30/חודש בשימוש פעיל.‬
+    # ‫אם שוב יחזור לטעויות → ‫להחליף ל-`claude-sonnet-4-5`.‬
     final_text = None
     for turn in range(6):
         resp = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-haiku-4-5",
             max_tokens=1500,
             system=[{
                 "type": "text",
