@@ -144,11 +144,20 @@ def _poll_once(dc: ChatRaceDashboardClient) -> int:
             max_ts = max(max_ts, la)
             continue
 
-        # Skip if Asi (or anyone) already replied AFTER this customer message
+        # Skip if a **human agent** already replied AFTER this customer message.
+        # Bot auto-replies (sent_by=0 — e.g. "תודה, פנייתך התקבלה",
+        # interactive menus, `[template:...]`) are NOT a real reply — they're
+        # the welcome flow. We still want to surface the customer's question
+        # to Asi in mobile mode.
         last_in_ts = int(last_in.get("ts") or 0)
-        last_out = next((m for m in msgs_sorted if m.get("direction") == "out"), None)
-        if last_out and int(last_out.get("ts") or 0) > last_in_ts:
-            # Someone (human or bot) already replied. Move cursor and skip.
+        last_human_out = next(
+            (m for m in msgs_sorted
+              if m.get("direction") == "out"
+              and m.get("sent_by") not in (None, 0, "0", "")),
+            None,
+        )
+        if last_human_out and int(last_human_out.get("ts") or 0) > last_in_ts:
+            # A human already replied. Move cursor and skip.
             max_ts = max(max_ts, la)
             continue
 
