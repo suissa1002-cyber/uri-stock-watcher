@@ -8,7 +8,7 @@ db.py — SQLAlchemy models + session management for the stock-watcher.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 from typing import Optional
 
@@ -81,6 +81,23 @@ class PendingReply(Base):
             "sent_at":             self.sent_at.isoformat() if self.sent_at else None,
             "revision_count":      self.revision_count,
         }
+
+
+class TelegramMessage(Base):
+    """
+    ‫זיכרון שיחה לחילופי דברים בטלגרם.‬
+    ‫אנחנו שומרים את ההודעות של אסי + ‫תשובות הבוט, ‫כדי שClaude יוכל לקבל‬
+    ‫הקשר משיחה רב-הודעתית (לדוגמה: ‫"לקוח X" → ‫"מה הכתובת שלו").‬
+    ‫מנקים אוטומטית הודעות בנות יותר מ-2 ‏שעות.‬
+    """
+    __tablename__ = "telegram_messages"
+
+    id          = Column(Integer, primary_key=True)
+    chat_id     = Column(BigInteger, nullable=False, index=True)
+    role        = Column(String(20), nullable=False)  # 'user' | 'assistant'
+    text        = Column(Text, nullable=False)
+    ts          = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                         nullable=False, index=True)
 
 
 class ScheduledAction(Base):
@@ -403,6 +420,39 @@ def get_pending_by_telegram_id(telegram_message_id: int) -> Optional[PendingRepl
         return s.execute(
             select(PendingReply).where(PendingReply.telegram_message_id == telegram_message_id)
         ).scalar_one_or_none()
+
+
+def record_telegram_message(chat_id: int, role: str, text: str) -> None:
+    """‫שומר הודעת טלגרם להקשר. ‫מנקה הודעות ישנות מ-2 ‏שעות.‬"""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+    with session_scope() as s:
+        # ‫נקה ישן‬
+        from sqlalchemy import delete
+        s.execute(delete(TelegramMessage).where(TelegramMessage.ts < cutoff))
+        # ‫הוסף חדש‬
+        s.add(TelegramMessage(chat_id=chat_id, role=role, text=text[:4000]))
+
+
+def get_recent_telegram_messages(chat_id: int, limit: int = 10,
+                                    minutes_back: int = 30) -> list[dict]:
+    """
+    ‫מחזיר את N ‏ההודעות האחרונות בchat בתוך חלון זמן.‬
+    ‫מסונן לפי chat_id ‫כדי לא לזלוג בין משתמשים.‬
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes_back)
+    with session_scope() as s:
+        rows = s.execute(
+            select(TelegramMessage)
+              .where(TelegramMessage.chat_id == chat_id,
+                     TelegramMessage.ts >= cutoff)
+              .order_by(TelegramMessage.ts.desc())
+              .limit(limit)
+        ).scalars().all()
+    # ‫הופך לסדר כרונולוגי + ‫מחזיר רשימת dicts פשוטה‬
+    out = []
+    for r in reversed(rows):
+        out.append({"role": r.role, "text": r.text, "ts": r.ts.isoformat()})
+    return out
 
 
 def add_scheduled_action(action_type: str, target_phone: str, target_name: str,

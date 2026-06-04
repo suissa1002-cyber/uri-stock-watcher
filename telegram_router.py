@@ -18,6 +18,7 @@ from db import (
     PendingReply, get_pending_reply, mark_reply_sent, mark_reply_cancelled,
     update_reply_draft, get_latest_waiting, set_mobile_mode, get_mobile_mode,
     get_pending_by_telegram_id,
+    record_telegram_message, get_recent_telegram_messages,
 )
 
 log = logging.getLogger("stock_watcher.telegram_router")
@@ -207,6 +208,12 @@ def handle_command(text: str, chat_id: int,
         log.warning(f"Unauthorized command from chat_id={chat_id}")
         return {"ok": False, "error": "unauthorized"}
 
+    # ‫שמור את ההודעה לזיכרון השיחה (לפני שמטפלים)‬
+    try:
+        record_telegram_message(chat_id, "user", text)
+    except Exception as e:
+        log.warning(f"failed to record user msg: {e}")
+
     # ‫נסה למצוא את הPendingReply שעליו אסי הגיב‬
     reply_context = None
     if reply_to_telegram_msg_id:
@@ -309,10 +316,11 @@ def handle_command(text: str, chat_id: int,
     # ‫כל הודעה שלא תאמה לפקודה (activate/deactivate/send/cancel/edit)‬
     # ‫מטופלת ‏כשאילתה ‏(לדוגמה: ‏"אורי מה יש לנו מ-Oppo X9 Ultra?"). ‏אורי‬
     # ‫עונה ישירות עם נתונים מ-WC + ‏NewOrder.‬
-    return _handle_query(text, context=reply_context)
+    return _handle_query(text, context=reply_context, chat_id=chat_id)
 
 
-def _handle_query(question: str, context: Optional[PendingReply] = None) -> dict:
+def _handle_query(question: str, context: Optional[PendingReply] = None,
+                   chat_id: Optional[int] = None) -> dict:
     """
     ‫עונה לשאלה כללית של אסי דרך טלגרם.‬
     ‫אם ‏`context` ‫מסופק (אסי הגיב לטיוטה ספציפית) — ‫מוסיף את פרטי הלקוח‬
@@ -339,12 +347,29 @@ def _handle_query(question: str, context: Optional[PendingReply] = None) -> dict
         )
         full_question = prefix + question
 
+    # ‫שלוף 5 ‏הודעות אחרונות בchat לזיכרון שיחה‬
+    # ‫(מסיר את ההודעה הנוכחית — ‫היא תהיה ה-input)‬
+    history = []
+    if chat_id is not None:
+        try:
+            recent = get_recent_telegram_messages(chat_id, limit=8, minutes_back=30)
+            # ‫הכל חוץ מההודעה האחרונה (היא הנוכחית — ‫כבר נשמרה)‬
+            history = recent[:-1] if recent else []
+        except Exception as e:
+            log.warning(f"failed to load chat history: {e}")
+
     try:
-        answer = answer_query(full_question, dashboard=dc)
+        answer = answer_query(full_question, dashboard=dc, history=history)
         # ‫שולח את התשובה — ‫מוגבל ל-4000 ‏תווים מסוג HTML של Telegram‬
         if len(answer) > 4000:
             answer = answer[:3900] + "\n\n<i>(תשובה ארוכה — קוצרה)</i>"
-        _send(answer)
+        msg_id = _send(answer)
+        # ‫שמור את התשובה לזיכרון השיחה‬
+        if chat_id is not None:
+            try:
+                record_telegram_message(chat_id, "assistant", answer[:2000])
+            except Exception as e:
+                log.warning(f"failed to record assistant msg: {e}")
         return {"ok": True, "action": "query", "answer_length": len(answer)}
     except Exception as e:
         log.exception(f"query failed: {e}")

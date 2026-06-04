@@ -363,7 +363,18 @@ def _tool_get_customer_orders(phone: str) -> str:
     out = []
     for o in orders_list[:15]:
         b = o.get("billing", {})
+        sh = o.get("shipping", {})
         items = [it.get("name","")[:60] for it in (o.get("line_items") or [])]
+
+        # ‫כתובת משלוח מלאה — ‫אם יש shipping נפרד נשתמש בו, ‫אחרת billing‬
+        addr_src = sh if (sh.get("address_1") or sh.get("city")) else b
+        full_address = " ".join(filter(None, [
+            addr_src.get("address_1",""),
+            addr_src.get("address_2",""),
+            addr_src.get("city",""),
+            addr_src.get("postcode",""),
+        ])).strip()
+
         out.append({
             "id":       o["id"],
             "status":   o.get("status"),
@@ -371,8 +382,12 @@ def _tool_get_customer_orders(phone: str) -> str:
             "total":    f"{o.get('total','?')} {o.get('currency','ILS')}",
             "customer": f"{b.get('first_name','')} {b.get('last_name','')}".strip(),
             "phone":    b.get("phone",""),
-            "city":     b.get("city",""),
-            "shipping": (o.get("shipping_lines") or [{}])[0].get("method_title","?"),
+            "email":    b.get("email",""),
+            "billing_city": b.get("city",""),
+            "shipping_full_address": full_address,
+            "shipping_recipient":    f"{sh.get('first_name','') or b.get('first_name','')} {sh.get('last_name','') or b.get('last_name','')}".strip(),
+            "shipping_method": (o.get("shipping_lines") or [{}])[0].get("method_title","?"),
+            "payment_method":  o.get("payment_method_title",""),
             "items":    items,
         })
     return json.dumps({"orders_found": len(out), "orders": out}, ensure_ascii=False)
@@ -588,16 +603,31 @@ QUERY_SYSTEM_PROMPT = """\
 """
 
 
-def answer_query(question: str, dashboard=None) -> str:
+def answer_query(question: str, dashboard=None,
+                  history: Optional[list] = None) -> str:
     """
     ‫עונה לשאלה כללית של אסי דרך טלגרם. ‏מחזיר טקסט HTML מוכן לשליחה.‬
+    ‫`history` (אופציונלי) — ‫רשימת dicts ‫עם {role, text} מהשיחה האחרונה‬
+    ‫בTelegram. ‫מאפשר לClaude להבין הקשר רב-הודעתי (לדוגמה: ‫"דורון חזן"‬
+    ‫בהודעה אחת, ‫"מה הכתובת שלו" בבאה).‬
+
     ‫אם Claude API לא זמין → ‏fallback פשוט.‬
     """
     client = _get_client()
     if not client:
         return "⚠️ Claude API לא זמין — לא יכול לענות"
 
-    messages = [{"role": "user", "content": question}]
+    # ‫בנה messages: ‫היסטוריה (אם יש) + ‫השאלה הנוכחית‬
+    messages = []
+    for h in (history or []):
+        role = h.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        txt = (h.get("text") or "").strip()
+        if not txt:
+            continue
+        messages.append({"role": role, "content": txt})
+    messages.append({"role": "user", "content": question})
 
     final_text = None
     for turn in range(6):
