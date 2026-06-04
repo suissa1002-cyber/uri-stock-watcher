@@ -248,14 +248,16 @@ def telegram_webhook(update: TelegramUpdate):
     if not text or not chat_id:
         return {"ok": True, "skipped": "no_text_or_chat"}
 
-    # ‫אם זו תגובה (Reply) ‫להודעה ספציפית שלנו — ‫שלוף את ה-PendingReply‬
-    # ‫המתאים, ‫או ‫את ההודעה הקודמת מהזיכרון, ‫כדי שClaude ידע על מה.‬
+    # ‫Telegram מעביר את ‫**הטקסט המלא** ‫של ההודעה שמגיבים אליה ב-webhook.‬
+    # ‫אז גם אם אין לנו אותה ב-DB (לדוגמה אחרי restart) — ‫עדיין יש קונטקסט.‬
     reply_to = msg.get("reply_to_message", {}) or {}
-    reply_to_msg_id = reply_to.get("message_id")
-    incoming_msg_id = msg.get("message_id")
+    reply_to_msg_id   = reply_to.get("message_id")
+    reply_to_text     = reply_to.get("text") or reply_to.get("caption") or ""
+    incoming_msg_id   = msg.get("message_id")
 
     result = handle_command(text, int(chat_id),
                               reply_to_telegram_msg_id=reply_to_msg_id,
+                              reply_to_text_inline=reply_to_text,
                               incoming_telegram_msg_id=incoming_msg_id)
     return result
 

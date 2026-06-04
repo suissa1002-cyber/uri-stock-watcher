@@ -197,6 +197,7 @@ def parse_command(text: str) -> dict:
 
 def handle_command(text: str, chat_id: int,
                     reply_to_telegram_msg_id: Optional[int] = None,
+                    reply_to_text_inline: Optional[str] = None,
                     incoming_telegram_msg_id: Optional[int] = None) -> dict:
     """
     ‫מבצע את הפקודה שאסי שלח. ‏מחזיר dict עם תוצאה.‬
@@ -316,11 +317,11 @@ def handle_command(text: str, chat_id: int,
             return {"ok": False, "error": str(e)}
 
     # ─── Free-form query → ‫עובר ל-Claude כשאלה כללית ───
-    # ‫כל הודעה שלא תאמה לפקודה (activate/deactivate/send/cancel/edit)‬
-    # ‫מטופלת ‏כשאילתה. ‫אם זו תגובה (Reply) ‫להודעת בוט קודמת — ‫נשלוף את התוכן‬
-    # ‫של ההודעה ההיא ונכניס אותה כקונטקסט מרכזי.‬
-    replied_to_text = None
-    if reply_to_telegram_msg_id:
+    # ‫סדר עדיפויות לזיהוי הקונטקסט של Reply:‬
+    # ‫1. ‫`reply_to_text_inline` ‫— ‫מגיע ‫ישירות ‫מ-Telegram (תמיד אמין)‬
+    # ‫2. ‫DB lookup ‫(אם בלבל ‫Telegram לא כלל את הטקסט)‬
+    replied_to_text = reply_to_text_inline or None
+    if not replied_to_text and reply_to_telegram_msg_id:
         tm = find_telegram_message_by_id(chat_id, reply_to_telegram_msg_id)
         if tm:
             replied_to_text = tm.text
