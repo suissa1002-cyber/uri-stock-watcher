@@ -197,11 +197,14 @@ def handle_command(text: str, chat_id: int) -> dict:
         return {"ok": True, "action": "deactivate", "active": bool(m.active)}
 
     # ─── Action on a pending reply ───
-    reply_id = cmd.get("reply_id")
-    reply = get_pending_reply(reply_id) if reply_id else get_latest_waiting()
-    if not reply or reply.status != "waiting":
-        _send(f"❓ לא מצאתי טיוטה ממתינה לאישור. השליחה / ביטול לא בוצעו.")
-        return {"ok": False, "error": "no_waiting_reply"}
+    # ‫רק אם הפעולה היא באמת send/cancel/edit נדאג לטיוטה ממתינה.‬
+    # ‫אחרת — ‏תיפול לבסוף ל-_handle_query (ad-hoc Q&A).‬
+    if action in ("send", "cancel", "edit"):
+        reply_id = cmd.get("reply_id")
+        reply = get_pending_reply(reply_id) if reply_id else get_latest_waiting()
+        if not reply or reply.status != "waiting":
+            _send(f"❓ לא מצאתי טיוטה ממתינה לאישור. השליחה / ביטול לא בוצעו.")
+            return {"ok": False, "error": "no_waiting_reply"}
 
     if action == "send":
         from shared.connectop_client import ConnectOpClient
