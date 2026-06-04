@@ -211,7 +211,14 @@ def telegram_webhook(update: TelegramUpdate):
     chat_id = chat.get("id")
     if not text or not chat_id:
         return {"ok": True, "skipped": "no_text_or_chat"}
-    result = handle_command(text, int(chat_id))
+
+    # ‫אם זו תגובה (Reply) ‫להודעה ספציפית שלנו — ‫שלוף את ה-PendingReply‬
+    # ‫המתאים כדי שClaude ידע על איזה לקוח מדובר בלי לשאול.‬
+    reply_to = msg.get("reply_to_message", {}) or {}
+    reply_to_msg_id = reply_to.get("message_id")
+
+    result = handle_command(text, int(chat_id),
+                              reply_to_telegram_msg_id=reply_to_msg_id)
     return result
 
 

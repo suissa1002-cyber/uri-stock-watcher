@@ -17,6 +17,7 @@ from typing import Optional
 from db import (
     PendingReply, get_pending_reply, mark_reply_sent, mark_reply_cancelled,
     update_reply_draft, get_latest_waiting, set_mobile_mode, get_mobile_mode,
+    get_pending_by_telegram_id,
 )
 
 log = logging.getLogger("stock_watcher.telegram_router")
@@ -192,14 +193,24 @@ def parse_command(text: str) -> dict:
     return {"action": "unknown"}
 
 
-def handle_command(text: str, chat_id: int) -> dict:
+def handle_command(text: str, chat_id: int,
+                    reply_to_telegram_msg_id: Optional[int] = None) -> dict:
     """
     ‫מבצע את הפקודה שאסי שלח. ‏מחזיר dict עם תוצאה.‬
+
+    ‫אם ‏`reply_to_telegram_msg_id` ‫מסופק — ‫מנסה לאתר את הPendingReply‬
+    ‫המתאים. ‫הקשר הזה זמין ל-send/cancel/edit ‫(לזיהוי טיוטה ספציפית)‬
+    ‫וגם ל-_handle_query (כדי שClaude ידע על איזה לקוח אסי מדבר).‬
     """
     # Security: only allow whitelisted chat_ids
     if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
         log.warning(f"Unauthorized command from chat_id={chat_id}")
         return {"ok": False, "error": "unauthorized"}
+
+    # ‫נסה למצוא את הPendingReply שעליו אסי הגיב‬
+    reply_context = None
+    if reply_to_telegram_msg_id:
+        reply_context = get_pending_by_telegram_id(int(reply_to_telegram_msg_id))
 
     cmd = parse_command(text)
     action = cmd.get("action")
@@ -220,7 +231,14 @@ def handle_command(text: str, chat_id: int) -> dict:
     # ‫אחרת — ‏תיפול לבסוף ל-_handle_query (ad-hoc Q&A).‬
     if action in ("send", "cancel", "edit"):
         reply_id = cmd.get("reply_id")
-        reply = get_pending_reply(reply_id) if reply_id else get_latest_waiting()
+        # ‫1. ‫reply_id מפורש (#REPLY-N) ‫>‫ 2. ‫reply_to context ‫>‫ 3. ‫latest waiting‬
+        reply = None
+        if reply_id:
+            reply = get_pending_reply(reply_id)
+        if not reply and reply_context:
+            reply = reply_context
+        if not reply:
+            reply = get_latest_waiting()
         if not reply or reply.status != "waiting":
             _send(f"❓ לא מצאתי טיוטה ממתינה לאישור. השליחה / ביטול לא בוצעו.")
             return {"ok": False, "error": "no_waiting_reply"}
@@ -268,11 +286,15 @@ def handle_command(text: str, chat_id: int) -> dict:
     # ‫כל הודעה שלא תאמה לפקודה (activate/deactivate/send/cancel/edit)‬
     # ‫מטופלת ‏כשאילתה ‏(לדוגמה: ‏"אורי מה יש לנו מ-Oppo X9 Ultra?"). ‏אורי‬
     # ‫עונה ישירות עם נתונים מ-WC + ‏NewOrder.‬
-    return _handle_query(text)
+    return _handle_query(text, context=reply_context)
 
 
-def _handle_query(question: str) -> dict:
-    """‫עונה לשאלה כללית של אסי דרך טלגרם.‬"""
+def _handle_query(question: str, context: Optional[PendingReply] = None) -> dict:
+    """
+    ‫עונה לשאלה כללית של אסי דרך טלגרם.‬
+    ‫אם ‏`context` ‫מסופק (אסי הגיב לטיוטה ספציפית) — ‫מוסיף את פרטי הלקוח‬
+    ‫בתחילת השאלה כך שClaude לא יצטרך לשאול "‫על איזה לקוח?".‬
+    """
     from mobile_assistant import answer_query
     from shared.chatrace_dashboard_client import ChatRaceDashboardClient
 
@@ -284,8 +306,18 @@ def _handle_query(question: str) -> dict:
     except Exception:
         dc = None
 
+    # ‫בנה השאלה עם הקשר (אם יש)‬
+    full_question = question
+    if context:
+        prefix = (
+            f"[‫הקשר: ‏אסי מגיב לטיוטה שבנינו עבור הלקוח "
+            f"{context.customer_name} (טלפון {context.customer_phone}). "
+            f"‫השאלה / ‫הפקודה שלו מתייחסת ללקוח הזה.]\n\n"
+        )
+        full_question = prefix + question
+
     try:
-        answer = answer_query(question, dashboard=dc)
+        answer = answer_query(full_question, dashboard=dc)
         # ‫שולח את התשובה — ‫מוגבל ל-4000 ‏תווים מסוג HTML של Telegram‬
         if len(answer) > 4000:
             answer = answer[:3900] + "\n\n<i>(תשובה ארוכה — קוצרה)</i>"
