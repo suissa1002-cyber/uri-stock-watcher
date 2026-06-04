@@ -34,6 +34,7 @@ sys.path.insert(0, ROOT)
 
 from db import init_db, add_watch, list_all_watches, mark_cancelled
 from checker import run_check
+from tasks_reminder import run_reminder
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,24 +142,58 @@ def run_check_endpoint(dry_run: bool = False):
     return summary
 
 
+@app.post("/remind-tasks", dependencies=[Depends(require_token)])
+def remind_tasks_endpoint(dry_run: bool = False):
+    """
+    ‫עובר על כל הסוכנים, ‏אוסף משימות פתוחות (לא התחיל / ‏תקוע),‬
+    ‫ושולח התראת Telegram עם סיכום. ‏אם אין משימות — ‏לא שולח דבר.‬
+    """
+    return run_reminder(dry_run=dry_run)
+
+
 # ── Scheduler ──
 _scheduler: Optional[BackgroundScheduler] = None
+
+# Tasks reminder cadence (separate from stock check)
+REMIND_HOUR    = int(os.environ.get("REMIND_HOUR", "9"))
+REMIND_MINUTE  = int(os.environ.get("REMIND_MINUTE", "30"))
+REMIND_DAYS    = os.environ.get("REMIND_DAYS", "0-4")
+
 
 def start_scheduler():
     global _scheduler
     tz = pytz.timezone(TZ_NAME)
     _scheduler = BackgroundScheduler(timezone=tz)
+
+    # Job 1 — daily stock check (existing)
     _scheduler.add_job(
         func=run_check,
         trigger=CronTrigger(hour=CRON_HOUR, minute=0, day_of_week=CRON_DOW, timezone=tz),
         id="daily_stock_check",
-        name="Daily stock check at 09:00 IL",
+        name="Daily stock check",
         replace_existing=True,
-        coalesce=True,           # if missed, run once instead of N times
-        misfire_grace_time=3600, # tolerate up to 1h late
+        coalesce=True,
+        misfire_grace_time=3600,
     )
+
+    # Job 2 — daily open-tasks reminder (new)
+    _scheduler.add_job(
+        func=run_reminder,
+        trigger=CronTrigger(hour=REMIND_HOUR, minute=REMIND_MINUTE,
+                             day_of_week=REMIND_DAYS, timezone=tz),
+        id="daily_tasks_reminder",
+        name="Daily open-tasks reminder",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
     _scheduler.start()
-    log.info(f"Scheduler started — daily {CRON_HOUR}:00 on cron days={CRON_DOW} ({TZ_NAME})")
+    log.info(
+        f"Scheduler started — "
+        f"stock {CRON_HOUR}:00 ({CRON_DOW}) + "
+        f"tasks reminder {REMIND_HOUR}:{REMIND_MINUTE:02d} ({REMIND_DAYS}) ({TZ_NAME})"
+    )
 
 
 @app.on_event("startup")
