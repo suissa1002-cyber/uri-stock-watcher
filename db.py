@@ -213,7 +213,31 @@ def init_db():
     _engine = create_engine(db_url, echo=False, future=True, connect_args=connect_args)
     Base.metadata.create_all(_engine)
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
+
+    # ── Lightweight migrations (add columns that came after the table was first
+    # created). SQLAlchemy create_all does NOT add new columns to existing tables.
+    _run_migrations()
     return _engine
+
+
+def _run_migrations():
+    """Idempotent ALTER TABLE statements for columns added after deploy."""
+    from sqlalchemy import text
+    migrations = [
+        # Added 05/06/2026 — Reply-to-bot-message lookup
+        "ALTER TABLE telegram_messages ADD COLUMN IF NOT EXISTS telegram_msg_id BIGINT",
+        "CREATE INDEX IF NOT EXISTS ix_telegram_messages_telegram_msg_id ON telegram_messages(telegram_msg_id)",
+    ]
+    with _engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception as e:
+                # SQLite doesn't support IF NOT EXISTS on ADD COLUMN — ignore there
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    import logging
+                    logging.getLogger("db").warning(f"migration skipped: {stmt[:60]}... → {e}")
 
 
 @contextmanager
