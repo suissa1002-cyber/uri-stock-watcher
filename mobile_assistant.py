@@ -256,22 +256,44 @@ def draft_response(phone: str, customer_name: str, customer_message: str,
     if not final_text:
         return "⚠️ לא הצלחתי לסיים את הניסוח (יותר מדי tool turns)", "(טפל ידנית)"
 
-    # Parse the JSON Claude returned
-    summary = ""
-    draft   = ""
-    try:
-        # Strip markdown fences if present
-        t = final_text.strip()
-        if t.startswith("```"):
-            t = t.split("```", 2)[1]
-            if t.startswith("json"):
-                t = t[4:].strip()
-        parsed = json.loads(t)
-        summary = parsed.get("summary", "")
-        draft   = parsed.get("draft", "")
-    except json.JSONDecodeError:
-        log.warning(f"Claude returned non-JSON: {final_text[:200]}")
-        summary = "⚠️ Claude החזיר טקסט לא תקני"
-        draft   = final_text   # fallback — let Asi see it
-
+    # Parse the JSON Claude returned. Claude sometimes adds preamble text
+    # before the JSON, or wraps it in a ```json fenced block. Try multiple
+    # extraction strategies before giving up.
+    summary, draft = _extract_summary_draft(final_text)
     return summary, draft
+
+
+def _extract_summary_draft(text: str) -> Tuple[str, str]:
+    """Robust JSON extraction — tolerates preamble, fenced blocks, etc."""
+    import re as _re
+    t = text.strip()
+
+    # Strategy 1: ```json ... ``` fenced block (with possible preamble)
+    m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", t, _re.DOTALL)
+    if m:
+        try:
+            parsed = json.loads(m.group(1))
+            return parsed.get("summary", ""), parsed.get("draft", "")
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 2: raw JSON anywhere — find the first {...} that parses
+    m = _re.search(r"\{[^{}]*\"summary\".*?\"draft\".*?\}", t, _re.DOTALL)
+    if m:
+        try:
+            parsed = json.loads(m.group(0))
+            return parsed.get("summary", ""), parsed.get("draft", "")
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 3: try parsing the whole thing
+    try:
+        parsed = json.loads(t)
+        return parsed.get("summary", ""), parsed.get("draft", "")
+    except json.JSONDecodeError:
+        pass
+
+    # All strategies failed
+    log.warning(f"Failed to extract JSON. Raw: {text[:300]}")
+    return ("⚠️ Claude החזיר טקסט לא תקני — ‫עיין בlog לטקסט הגולמי",
+            text)
