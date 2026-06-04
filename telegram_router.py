@@ -60,18 +60,35 @@ def _send(text: str, reply_to: Optional[int] = None,
 def send_draft_to_asi(reply: PendingReply) -> Optional[int]:
     """
     ‫שולח לאסי הודעת טיוטה — ‏עם summary + ‏draft + ‏אפשרויות תגובה.‬
+
+    ‫עיצוב: ‫מבלי `<code>` ‫על הטיוטה (כדי שלא ייראה רובוטי) — ‫משתמש‬
+    ‫ב-`<blockquote>` ‫שמעצב נכון את ההצעה לקריאה אנושית.‬
     """
+    # Escape ONCE per content block — draft separately so we don't mangle it
+    msg_esc    = _escape_html(reply.customer_message)
+    summary_esc = _escape_html(reply.context_summary)
+    draft_esc  = _escape_html(reply.claude_draft)
+
     body = (
-        f"📥 <b>שיחה חדשה — {reply.customer_name}</b>\n"
-        f"<code>{reply.customer_phone}</code>\n\n"
-        f"💬 <i>הודעת הלקוח:</i>\n"
-        f"\"{reply.customer_message}\"\n\n"
-        f"✨ <i>הקשר:</i>\n"
-        f"{reply.context_summary}\n\n"
-        f"📝 <b>טיוטה (#REPLY-{reply.id}):</b>\n"
-        f"<code>{_escape_html(reply.claude_draft)}</code>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"✏️ ענה: <b>שלח</b> / <b>שנה: ...</b> / <b>עצור</b>"
+        f"📥  <b>שיחה חדשה</b>\n"
+        f"👤  {reply.customer_name}\n"
+        f"📞  {reply.customer_phone}\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"\n"
+        f"💬  <b>הודעת הלקוח</b>\n"
+        f"<blockquote>{msg_esc}</blockquote>\n"
+        f"\n"
+        f"🎯  <b>הקשר</b>\n"
+        f"<i>{summary_esc}</i>\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"\n"
+        f"📝  <b>טיוטה לאישור</b>  ·  <code>#{reply.id}</code>\n"
+        f"<blockquote>{draft_esc}</blockquote>\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"✏️  <b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ..."
     )
     return _send(body)
 
@@ -86,9 +103,11 @@ def send_confirmation(reply: PendingReply, status: str) -> None:
 def send_edit_confirmation(reply: PendingReply) -> Optional[int]:
     """After Asi requested an edit and Claude re-drafted."""
     body = (
-        f"✏️ <b>טיוטה מעודכנת (#REPLY-{reply.id}):</b>\n"
-        f"<code>{_escape_html(reply.claude_draft)}</code>\n\n"
-        f"✏️ ענה: <b>שלח</b> / <b>שנה: ...</b> / <b>עצור</b>"
+        f"✏️  <b>טיוטה מעודכנת</b>  ·  <code>#{reply.id}</code>\n"
+        f"<blockquote>{_escape_html(reply.claude_draft)}</blockquote>\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"✏️  <b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ..."
     )
     return _send(body)
 
