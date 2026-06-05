@@ -140,21 +140,41 @@ def _customer_hashtag(phone: str) -> str:
     return f"#טל{digits}" if digits else ""
 
 
-def send_inbound_notification(reply: PendingReply) -> Optional[int]:
+def send_inbound_notification(reply: PendingReply,
+                                prev_human_outbound: list = None) -> Optional[int]:
     """
     Notify-Only mode: ‫שולח ‫**התראה ‫גולמית ‫בלבד** ‫בלי ‫להפעיל ‫Claude.
     ‫אסי ‫מחליט ‫אם ‫שווה ‫טיוטה — ‫אם ‫כן, ‫עושה ‫Reply ‫עם ‫"טיוטה".
 
     ‫סדר ‫השורות: ‫טקסט ‫עברי ‫קודם, ‫אמוג'י ‫בסוף — ‫כך ‫הטקסט ‫נצמד ‫ימינה ‫כסביר ‫RTL.
     ‫הhashtag ‫בסוף ‫הוא ‫לחיץ — ‫אסי ‫לוחץ ‫ורואה ‫את ‫כל ‫ההיסטוריה ‫מאותו ‫לקוח.‬
+
+    ‫`prev_human_outbound`: ‫עד 2 ‫תגובות ‫אנושיות ‫קודמות ‫שלך/אורי ‫(מהחדש ‫לישן).
+    ‫אם ‫קיים — ‫מציג ‫בלוק ‫הקשר ‫קצר ‫כדי ‫שתבין ‫על ‫מה ‫הלקוח ‫מגיב.
     """
     msg_esc  = _escape_html(reply.customer_message)
     name_esc = _escape_html(reply.customer_name or "לקוח")
     tag      = _customer_hashtag(reply.customer_phone)
+
+    # ‫בלוק ‫קונטקסט (רק ‫אם ‫יש)‬
+    context_block = ""
+    if prev_human_outbound:
+        # ‫מציג ‫מהישן ‫לחדש (סדר ‫זמן ‫טבעי ‫לקריאה)‬
+        lines = []
+        for msg in reversed(prev_human_outbound):
+            # ‫מגביל ‫אורך ‫לכל ‫שורה — ‫רק ‫רמז ‫להקשר
+            msg_short = msg[:200] + ("…" if len(msg) > 200 else "")
+            lines.append(f"{_RLM}<blockquote>{_escape_html(msg_short)}</blockquote>")
+        context_block = (
+            f"\n{_RLM}<i>ענית לו קודם 📜</i>\n"
+            + "\n".join(lines)
+        )
+
     body = (
         f"{_RLM}<b>{name_esc}</b>  📥\n"
         f"{_RLM}<code>{reply.customer_phone}</code>  ·  <code>#{reply.id}</code>\n"
-        f"{_RLM}<blockquote>{msg_esc}</blockquote>\n"
+        f"{_RLM}<blockquote>{msg_esc}</blockquote>"
+        f"{context_block}\n"
         f"{_RLM}<i>השב <b>טיוטה</b> כדי שאכין תשובה  💬</i>\n"
         f"{_RLM}{tag}"
     )

@@ -87,6 +87,33 @@ def _classify_conversation(msgs_sorted_desc: list, phone: str) -> tuple[str, str
     return ("followup", prev_ctx)
 
 
+def _recent_human_outbound(msgs_sorted_desc: list, limit: int = 2) -> list[str]:
+    """
+    ‫מחלץ ‫עד ‫`limit` ‫הודעות ‫יוצאות ‫**אנושיות** ‫(sent_by != 0) ‫אחרונות.
+    ‫מסנן: ‫תפריטי-bot ‫(sent_by=0), ‫templates ‫אוטומטיים, ‫הודעות ‫ריקות.
+    ‫מחזיר ‫רשימה ‫של ‫מחרוזות (ממוין ‫מהחדש ‫לישן).
+    """
+    if not msgs_sorted_desc:
+        return []
+    out = []
+    for m in msgs_sorted_desc:
+        if m.get("direction") != "out":
+            continue
+        sb = m.get("sent_by")
+        if sb in (None, 0, "0", ""):
+            continue  # ‫bot, ‫לא ‫אנושי
+        text = (m.get("text") or "").strip()
+        if not text or text.startswith("[template:") or text.startswith("[interactive"):
+            continue
+        # ‫קצרים ‫מ-3 ‫תווים = ‫לא ‫שימושי
+        if len(text) < 3:
+            continue
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _process_new_inbound(phone: str, name: str, text: str, ts: int,
                           dc: ChatRaceDashboardClient,
                           msgs_sorted_desc: list = None) -> None:
@@ -95,11 +122,19 @@ def _process_new_inbound(phone: str, name: str, text: str, ts: int,
     ‫שומרים ‫ב-DB ‫עם ‫status="notify_only" ‫ושולחים ‫התראה ‫גולמית ‫בטלגרם.
     ‫אסי ‫מחליט ‫אם ‫זה ‫שווה ‫טיוטה — ‫אם ‫כן, ‫עושה ‫Reply ‫עם ‫"טיוטה" ‫ואז
     ‫Claude ‫רץ ‫ויוצר ‫טיוטה ‫מלאה.
+
+    ‫06/2026 ‫בונוס: ‫אם ‫יש ‫היסטוריית ‫תשובות ‫אנושיות ‫בשיחה ‫(אסי/אורי
+    ‫כתבו ‫קודם ‫ללקוח), ‫מציגים ‫עד 2 ‫שורות ‫כדי ‫שאסי ‫יבין ‫מיד ‫על ‫מה
+    ‫הלקוח ‫מגיב — ‫בלי ‫שיצטרך ‫ללחוץ ‫על ‫hashtag.
     """
     from telegram_router import send_inbound_notification
     from db import add_pending_reply, update_reply_telegram_id
 
-    log.info(f"[mobile] notify-only inbound: {phone} ({name}) — {text[:60]!r}")
+    # ‫שלוף ‫קונטקסט ‫מהשיחה ‫(זול ‫מאוד — ‫רק ‫ConnectOp, ‫לא ‫Claude)
+    prev_humans = _recent_human_outbound(msgs_sorted_desc or [], limit=2)
+
+    log.info(f"[mobile] notify-only inbound: {phone} ({name}) — {text[:60]!r}"
+              f"  prev_human={len(prev_humans)}")
 
     # 1) Persist as notify_only (no Claude yet)
     reply = add_pending_reply(
@@ -119,7 +154,7 @@ def _process_new_inbound(phone: str, name: str, text: str, ts: int,
 
     # 2) Send raw notification to Asi (no Claude, no cost)
     try:
-        msg_id = send_inbound_notification(reply)
+        msg_id = send_inbound_notification(reply, prev_human_outbound=prev_humans)
         if msg_id:
             update_reply_telegram_id(reply.id, msg_id)
     except Exception as e:
