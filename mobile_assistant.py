@@ -500,21 +500,29 @@ def _tool_cancel_scheduled(action_id: int) -> str:
 
 
 def _tool_list_active_inbox(limit: int, dashboard) -> str:
-    """List recent active customer conversations from ConnectOp inbox."""
+    """List active (non-archived) customer conversations from ConnectOp inbox."""
     from datetime import datetime, timezone, timedelta
     IL = timezone(timedelta(hours=3))
     import time
     try:
+        # ‫מבקשים יותר ‫מהcap כי נסנן את הarchived‬
         resp = dashboard._post_user_php({
             "op":"conversations","op1":"get","offset":0,
-            "limit":max(5,min(int(limit or 10),50)),"pageName":"inbox",
+            "limit":100,"pageName":"inbox",
         })
         data = resp.get("data", []) if isinstance(resp, dict) else []
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
     now = int(time.time())
+    cap = max(5, min(int(limit or 10), 50))
     out = []
-    for x in sorted(data, key=lambda y: -int(y.get("last_active") or 0))[:int(limit or 10)]:
+    for x in sorted(data, key=lambda y: -int(y.get("last_active") or 0)):
+        # ‫ConnectOp returns archived ‫כ-string ("0"/"1") — ‫bool("0") = True!‬
+        # ‫מסנן: ‫רק שיחות שאינן ‫ארכיב‬
+        archived_str = str(x.get("archived", "")).strip()
+        is_archived = archived_str == "1"
+        if is_archived:
+            continue
         la = int(x.get("last_active") or 0)
         when = datetime.fromtimestamp(la, tz=timezone.utc).astimezone(IL).strftime("%d/%m %H:%M") if la else "?"
         age_min = (now - la) // 60 if la else 0
@@ -524,10 +532,15 @@ def _tool_list_active_inbox(limit: int, dashboard) -> str:
             "last_active": when,
             "minutes_ago": age_min,
             "last_msg":    (x.get("last_msg") or "")[:120],
-            "archived":    bool(x.get("archived")),
-            "live_chat":   bool(x.get("live_chat") == "1"),
+            "live_chat":   str(x.get("live_chat", "")).strip() == "1",
         })
-    return json.dumps({"count": len(out), "conversations": out}, ensure_ascii=False)
+        if len(out) >= cap:
+            break
+    return json.dumps({
+        "count": len(out),
+        "note": "‫מציג ‫רק ‫שיחות ‫שאינן ‫בארכיון.",
+        "conversations": out,
+    }, ensure_ascii=False)
 
 
 def _tool_get_order_by_id(order_id: int) -> str:
