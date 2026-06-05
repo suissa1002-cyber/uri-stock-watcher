@@ -201,6 +201,23 @@ CLAUDE_TOOLS = [
         },
     },
     {
+        "name": "send_message_now",
+        "description": (
+            "‫שולח **מיידית** ‫הודעת WhatsApp ‫ללקוח. ‫קרא לזה כשאסי ‫מאשר טיוטה "
+            "‫בפירוש: ‫'שלח', 'מושלם, שלח לו', 'הלך', 'go ahead', 'אישור', "
+            "‫'מצוין, ההודעה מוכנה'. ‫**אסור לקרוא ‫לזה ‫בלי ‫אישור ‫מפורש** — ‫אסי "
+            "‫צריך ‫לאשר ‫כל הודעה ‫אם לא נתן ‫אישור ‫בבירור — ‫תשאל, ‫אל ‫תניח."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type":"string","description":"‫טלפון בינלאומי בלי + ‫(לדוגמה 972527373565)"},
+                "text":  {"type":"string","description":"‫הטקסט המדויק שיישלח ב-WhatsApp"},
+            },
+            "required": ["phone","text"],
+        },
+    },
+    {
         "name": "schedule_send_message",
         "description": (
             "‫מתזמן **שליחת הודעת WhatsApp** ‫ללקוח בזמן ספציפי בעתיד. "
@@ -401,6 +418,28 @@ def _tool_cancel_scheduled(action_id: int) -> str:
         a.status = "cancelled"
         a.done_at = datetime.now(timezone.utc)
         return json.dumps({"ok": True, "id": action_id, "cancelled": True}, ensure_ascii=False)
+
+
+def _tool_send_message_now(phone: str, text: str) -> str:
+    """Send a WhatsApp message immediately via ConnectOp."""
+    from shared.connectop_client import ConnectOpClient
+    try:
+        co = ConnectOpClient.from_env()
+        result = co.send_text_as_human(phone.strip(), text)
+        ok = bool(result.get("success"))
+        return json.dumps({
+            "ok": ok,
+            "phone": phone,
+            "sent_at_il": _now_il_str(),
+            "preview": text[:200],
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _now_il_str() -> str:
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(tz=timezone(timedelta(hours=3))).strftime("%d/%m %H:%M")
 
 
 def _tool_schedule_send_message_if_no_reply(phone: str, name: str,
@@ -618,6 +657,8 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
                 args.get("phone",""), args.get("name",""),
                 args.get("text",""), args.get("delay_minutes", 60),
             )
+        if name == "send_message_now":
+            return _tool_send_message_now(args.get("phone",""), args.get("text",""))
         if name == "schedule_send_message_if_no_reply":
             return _tool_schedule_send_message_if_no_reply(
                 args.get("phone",""), args.get("name",""),
@@ -752,6 +793,14 @@ QUERY_SYSTEM_PROMPT = """\
 3. ‫השב עם הקישור: ‫`<a href="URL">‫שם המוצר</a>` ‫או ‫רק את הURL.‬
 
 ‫**אסור** ‫לומר ‫"אין לי כלי לקישורים" — ‫זו ‫טעות. ‫קישורים זמינים דרך ‫`search_product`.‬
+
+## ‫📤 ‫**שליחה ישירה ‫ל-WhatsApp — ‫יש לך ‫כלי!**‬
+
+‫**`send_message_now(phone, text)`** ‫שולח ‫מיידית ‫הודעה ‫ל-WhatsApp. ‫אסור ‫לומר ‫"אתה ‫צריך ‫להעתיק ‫ידנית" — ‫זו ‫טעות.‬
+
+‫מתי ‫לקרוא ‫לזה: ‫אסי ‫מאשר ‫הודעה ‫בפירוש — ‫"שלח", ‫"שלח לו", ‫"הלך", ‫"מצוין, ‫שלח", ‫"מושלם, ‫תשלח". ‫כשהוא ‫אמר "‫ההודעה ‫מוכנה ‫ללכת" ‫עם ‫✅ — ‫זה ‫אישור ‫ברור.‬
+
+‫**זהירות**: ‫אל ‫תשלח ‫בלי ‫אישור ‫מפורש. ‫אם ‫אסי ‫רק ‫אמר ‫"תכין ‫טיוטה" ‫או ‫"מה ‫אתה ‫היית ‫שולח" — ‫זה ‫**לא ‫אישור**. ‫הכן ‫את ‫הטיוטה, ‫הצג ‫אותה, ‫ושאל "לשלוח?".‬
 
 ## ‫🚨 ‫**כלל ברזל ‫— ‫אפס ‫hallucination**‬
 
