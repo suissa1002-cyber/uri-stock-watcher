@@ -162,35 +162,28 @@ def _poll_once(dc: ChatRaceDashboardClient) -> int:
             max_ts = max(max_ts, la)
             continue
 
-        # ─── Cost guard: ‫מנעול ‫זמן ‫קשיח ‫על ‫כל ‫טלפון ‫─────────────
+        # ─── Cost guard: ‫dedup ‫על ‫טקסט ‫זהה ‫בלבד ‫─────────────────
         # ‫הבעיה ‫שראינו ‫(05/06/2026): ‫אם ‫אסי ‫לא ‫מטפל ‫בdraft, ‫הוא ‫נשאר ‫`waiting`
-        # ‫אבל ‫הbot ‫עוד ‫בודק ‫dedup ‫רק ‫עליו — ‫והdedup ‫נכשל ‫כשהtext ‫זהה ‫אבל
-        # ‫הסטטוס ‫כבר ‫שונה ‫(sent/cancelled). ‫תוצאה: 8 ‫drafts ‫על ‫אותו ‫טקסט.
-        # ‫**כעת**: ‫אם ‫יצרנו ‫draft ‫כלשהו (כל ‫סטטוס) ‫על ‫הטלפון ‫הזה ‫ב-15 ‫הדק'
-        # ‫האחרונות — ‫מדלגים. ‫זה ‫חוסך ‫עלות ‫Claude ‫על ‫אותו ‫לקוח ‫שמתעקש.‬
+        # ‫אבל ‫הdedup ‫הישן ‫בודק ‫רק ‫status=waiting — ‫אם ‫הסטטוס ‫כבר ‫sent/cancelled
+        # ‫ואותו ‫טקסט ‫מגיע ‫שוב, ‫זה ‫היה ‫יוצר ‫עוד ‫draft. 8x ‫על ‫אותו ‫טקסט.
+        # ‫**הגנה ‫שהוספנו**: ‫אם ‫קיים ‫**אותו ‫טקסט ‫בדיוק** ‫מאותו ‫טלפון ‫תוך 30 ‫דק'
+        # ‫(בכל ‫סטטוס) — ‫מדלגים. ‫תשובה ‫**שונה** ‫של ‫הלקוח ‫כן ‫עוברת ‫(זה ‫context ‫חדש).‬
         from db import session_scope as _ss, PendingReply as _PR
         from sqlalchemy import select as _select
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         from sqlalchemy import desc as _desc
-        cutoff = _dt.now(_tz.utc) - _td(minutes=15)
+        cutoff = _dt.now(_tz.utc) - _td(minutes=30)
         with _ss() as _s:
             recent = _s.execute(
                 _select(_PR).where(
                     _PR.customer_phone == phone,
+                    _PR.customer_message == text,
                     _PR.created_at >= cutoff,
                 ).order_by(_desc(_PR.created_at)).limit(1)
             ).scalars().first()
         if recent:
-            log.info(f"  cost-guard: skipping {phone} — already drafted "
-                     f"<15min ago (status={recent.status})")
-            max_ts = max(max_ts, la)
-            continue
-
-        # ‫בנוסף — ‫הdedup ‫הישן ‫(אם ‫הטקסט ‫זהה ‫במצב ‫waiting, ‫כפילות ‫ודאית)‬
-        existing = next((r for r in list_waiting_replies()
-                          if r.customer_phone == phone
-                          and r.customer_message.strip() == text), None)
-        if existing:
+            log.info(f"  cost-guard: skipping {phone} — same text already "
+                     f"drafted <30min ago (status={recent.status})")
             max_ts = max(max_ts, la)
             continue
 
