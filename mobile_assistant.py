@@ -336,6 +336,39 @@ CLAUDE_TOOLS = [
         },
     },
     {
+        "name": "schedule_personal_reminder",
+        "description": (
+            "‫מתזמן **תזכורת אישית בטלגרם** ‫(לא הודעה ל-WhatsApp ללקוח!). "
+            "‫בזמן הנקוב, ‫שולח לאסי הודעת טלגרם לערוץ Agent Tasks עם הקונטקסט. "
+            "‫שימושי כשאסי אומר: ‫'תזכיר לי לחזור לורד ביום רביעי 11:00 לגביי "
+            "‫חיוב אשראי על מקבוק' או 'תזכיר לי לבדוק עם בנדא ראשון ב-10:00'. "
+            "‫**זה לא שולח כלום ללקוח** — ‫רק שולח טלגרם לאסי כדי שיזכור לטפל. "
+            "‫אם רוצים לשלוח ללקוח עצמו טקסט בזמן עתידי — ‫השתמש ב-schedule_send_message."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "due_at_il": {
+                    "type": "string",
+                    "description": "‫תאריך+שעה לפי שעון ישראל בפורמט 'YYYY-MM-DD HH:MM' (לדוגמה '2026-06-10 11:00')"
+                },
+                "context": {
+                    "type": "string",
+                    "description": "‫למה התזכורת — ‫טקסט חופשי. ‫לדוגמה: 'בדיקה מול בנדא על Flightdeck ללקוח 972502437070'"
+                },
+                "customer_name": {
+                    "type": "string",
+                    "description": "‫שם הלקוח (אם רלוונטי — ‫אם לא, השאר ריק)"
+                },
+                "customer_phone": {
+                    "type": "string",
+                    "description": "‫טלפון בינלאומי בלי + (אם רלוונטי — ‫אם תזכורת כללית, השאר ריק)"
+                },
+            },
+            "required": ["due_at_il", "context"],
+        },
+    },
+    {
         "name": "schedule_archive_if_no_reply",
         "description": (
             "‫מתזמן ארכוב **מותנה** — ‫בעוד N דקות, ‫**אם הלקוח לא ענה בינתיים**, "
@@ -718,6 +751,46 @@ def _tool_schedule_send_message(phone: str, name: str, text: str,
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
+def _tool_schedule_personal_reminder(due_at_il: str, context: str,
+                                       customer_name: str = "",
+                                       customer_phone: str = "") -> str:
+    """Schedule a personal-reminder Telegram alert at a specific date+time (IL)."""
+    from datetime import datetime
+    import pytz
+    from db import add_scheduled_action
+    try:
+        s = due_at_il.strip().replace("T", " ")
+        dt_local = None
+        for f in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                dt_local = datetime.strptime(s, f); break
+            except ValueError:
+                continue
+        if dt_local is None:
+            return json.dumps({"ok": False,
+                "error": f"could not parse due_at_il: {due_at_il!r} (use YYYY-MM-DD HH:MM)"},
+                ensure_ascii=False)
+        il = pytz.timezone("Asia/Jerusalem")
+        due_utc_naive = il.localize(dt_local).astimezone(pytz.UTC).replace(tzinfo=None)
+        a = add_scheduled_action(
+            action_type="personal_reminder",
+            target_phone=(customer_phone or "NA").strip(),
+            target_name=(customer_name or "").strip(),
+            due_at=due_utc_naive,
+            note=context or "",
+        )
+        return json.dumps({
+            "ok": True,
+            "id": a.id,
+            "due_at_il": dt_local.strftime("%Y-%m-%d %H:%M"),
+            "customer_name": customer_name or None,
+            "customer_phone": customer_phone or None,
+            "preview": context[:200],
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
 def _tool_schedule_archive(phone: str, name: str, delay_minutes: int) -> str:
     """Schedule a conditional archive — only archives if customer doesn't reply."""
     from datetime import datetime, timezone, timedelta
@@ -870,6 +943,13 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
             return _tool_get_customer_orders(args.get("phone",""))
         if name == "archive_conversation":
             return _tool_archive_conversation(args.get("phone",""), dashboard)
+        if name == "schedule_personal_reminder":
+            return _tool_schedule_personal_reminder(
+                args.get("due_at_il", ""),
+                args.get("context", ""),
+                args.get("customer_name", ""),
+                args.get("customer_phone", ""),
+            )
         if name == "schedule_archive_if_no_reply":
             return _tool_schedule_archive(
                 args.get("phone",""), args.get("name",""),

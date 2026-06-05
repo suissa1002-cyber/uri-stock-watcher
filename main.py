@@ -35,7 +35,9 @@ sys.path.insert(0, ROOT)
 from db import (
     init_db, add_watch, list_all_watches, mark_cancelled,
     get_mobile_mode, set_mobile_mode, list_waiting_replies,
+    add_scheduled_action, ScheduledAction, session_scope,
 )
+from sqlalchemy import select
 from checker import run_check
 from tasks_reminder import run_reminder
 from mobile_listener import start_listener, stop_listener
@@ -84,6 +86,14 @@ class WatchAddRequest(BaseModel):
     notes:          str = Field("",   description="Free-text notes (color, version, etc.)")
 
 
+class ReminderAddRequest(BaseModel):
+    """‫תזכורת אישית — שולחת רק טלגרם ל-Agent Tasks chat בזמן ה-due_at שצוין."""
+    due_at:         str = Field(..., description="ISO datetime IL time, e.g. '2026-06-10T11:00:00' or '2026-06-10 11:00'")
+    context:        str = Field(..., description="‫למה לחזור / על מה התזכורת (טקסט חופשי)")
+    customer_name:  str = Field("",   description="‫שם הלקוח (אופציונלי)")
+    customer_phone: str = Field("NA", description="‫טלפון הלקוח (אופציונלי — 'NA' אם תזכורת כללית)")
+
+
 # ── Endpoints ──
 @app.get("/health")
 def health():
@@ -93,7 +103,7 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    """Simple landing page."""
+    """Simple landing page — stock watches + personal reminders."""
     watches = list_all_watches(limit=50)
     rows_html = ""
     for w in watches:
@@ -102,16 +112,48 @@ def index():
             f"<td>{w.product_name}</td><td>{w.status}</td>"
             f"<td>{w.added_at.strftime('%d/%m %H:%M') if w.added_at else ''}</td></tr>"
         )
+
+    # ‫תזכורות ‫אישיות ‫קרובות ‫(pending only)‬
+    il_tz = pytz.timezone(TZ_NAME)
+    rem_rows_html = ""
+    reminders_count = 0
+    with session_scope() as s:
+        items = list(s.execute(
+            select(ScheduledAction).where(
+                ScheduledAction.action_type == "personal_reminder",
+                ScheduledAction.status == "pending",
+            ).order_by(ScheduledAction.due_at.asc()).limit(30)
+        ).scalars().all())
+        reminders_count = len(items)
+        for a in items:
+            due_il = pytz.UTC.localize(a.due_at).astimezone(il_tz)
+            cust_label = a.target_name or "—"
+            if a.target_phone and a.target_phone not in ("NA", "-", ""):
+                cust_label = f"{cust_label} <small>({a.target_phone})</small>"
+            ctx = (a.note or "")[:200].replace("<", "&lt;").replace(">", "&gt;")
+            rem_rows_html += (
+                f"<tr><td>{a.id}</td>"
+                f"<td><strong>{due_il.strftime('%d/%m %H:%M')}</strong></td>"
+                f"<td>{cust_label}</td><td>{ctx}</td></tr>"
+            )
+
     return f"""
     <html dir="rtl"><head><meta charset="utf-8"><title>Uri Stock Watcher</title>
-    <style>body{{font-family:system-ui;max-width:900px;margin:40px auto;padding:0 20px}}
-    table{{border-collapse:collapse;width:100%}} th,td{{padding:8px;border-bottom:1px solid #eee;text-align:right}}
-    th{{background:#f6f6f6}}</style></head><body>
+    <style>body{{font-family:system-ui;max-width:1000px;margin:40px auto;padding:0 20px}}
+    table{{border-collapse:collapse;width:100%;margin-bottom:32px}}
+    th,td{{padding:8px;border-bottom:1px solid #eee;text-align:right}}
+    th{{background:#f6f6f6}} small{{color:#888}}
+    h2{{margin-top:32px}}</style></head><body>
     <h1>Uri Stock Watcher</h1>
-    <p>Cron: <strong>{CRON_HOUR}:00 — ‫ימי {CRON_DOW}</strong> (timezone: {TZ_NAME})</p>
-    <p>‫סך הכל ‏{len(watches)} ‏רשומות אחרונות:</p>
+    <p>‫בדיקת ‫מלאי ‫אוטומטית: ‫<strong>{CRON_HOUR}:00 — ‫ימי {CRON_DOW}</strong> · ‫תזכורת ‫משימות ‫טלגרם: ‫<strong>{REMIND_HOUR}:{REMIND_MINUTE:02d} — ‫ימי {REMIND_DAYS}</strong> · timezone: {TZ_NAME}</p>
+
+    <h2>📡 ‫מעקב ‫מלאי ‫({len(watches)} ‫רשומות)</h2>
     <table><thead><tr><th>id</th><th>‫שם</th><th>‫מוצר</th><th>‫סטטוס</th><th>‫נוסף</th></tr></thead>
     <tbody>{rows_html}</tbody></table>
+
+    <h2>⏰ ‫תזכורות ‫אישיות ‫קרובות ‫({reminders_count})</h2>
+    <table><thead><tr><th>id</th><th>‫מתי</th><th>‫לקוח</th><th>‫על ‫מה</th></tr></thead>
+    <tbody>{rem_rows_html or '<tr><td colspan="4" style="text-align:center;color:#888">‫אין ‫תזכורות ‫פעילות</td></tr>'}</tbody></table>
     </body></html>
     """
 
@@ -139,6 +181,85 @@ def list_watches_endpoint(limit: int = 200):
 def cancel_watch_endpoint(item_id: int):
     mark_cancelled(item_id)
     return {"ok": True, "id": item_id, "status": "cancelled"}
+
+
+# ─── Personal reminders (Agent Tasks Telegram) ──────────────────────
+
+def _parse_due_at(s: str) -> datetime:
+    """Accept ISO-like '2026-06-10T11:00:00' or '2026-06-10 11:00'. IL time → UTC."""
+    s = s.strip().replace("T", " ")
+    fmts = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]
+    dt_local = None
+    for f in fmts:
+        try:
+            dt_local = datetime.strptime(s, f)
+            break
+        except ValueError:
+            continue
+    if dt_local is None:
+        raise HTTPException(400, f"could not parse due_at: {s!r} (use 'YYYY-MM-DD HH:MM')")
+    # Treat as Asia/Jerusalem, convert to UTC
+    tz = pytz.timezone(TZ_NAME)
+    return tz.localize(dt_local).astimezone(pytz.UTC).replace(tzinfo=None)
+
+
+@app.post("/reminders", dependencies=[Depends(require_token)])
+def add_reminder_endpoint(req: ReminderAddRequest):
+    """Schedule a personal reminder — fires a Telegram message at due_at."""
+    due_utc = _parse_due_at(req.due_at)
+    a = add_scheduled_action(
+        action_type="personal_reminder",
+        target_phone=req.customer_phone or "NA",
+        target_name=req.customer_name or "",
+        due_at=due_utc,
+        note=req.context,
+    )
+    return {
+        "id": a.id,
+        "due_at_il": pytz.UTC.localize(a.due_at).astimezone(
+            pytz.timezone(TZ_NAME)).strftime("%Y-%m-%d %H:%M"),
+        "customer_name": a.target_name,
+        "customer_phone": a.target_phone,
+        "context": a.note,
+        "status": a.status,
+    }
+
+
+@app.get("/reminders", dependencies=[Depends(require_token)])
+def list_reminders_endpoint(include_done: bool = False, limit: int = 50):
+    """List personal reminders (pending by default)."""
+    il_tz = pytz.timezone(TZ_NAME)
+    with session_scope() as s:
+        q = select(ScheduledAction).where(
+            ScheduledAction.action_type == "personal_reminder",
+        )
+        if not include_done:
+            q = q.where(ScheduledAction.status == "pending")
+        q = q.order_by(ScheduledAction.due_at.asc()).limit(limit)
+        items = list(s.execute(q).scalars().all())
+        out = []
+        for a in items:
+            due_il = pytz.UTC.localize(a.due_at).astimezone(il_tz)
+            out.append({
+                "id": a.id,
+                "due_at_il":     due_il.strftime("%Y-%m-%d %H:%M"),
+                "customer_name": a.target_name,
+                "customer_phone": a.target_phone,
+                "context":       a.note,
+                "status":        a.status,
+                "created_at":    a.created_at.isoformat() if a.created_at else None,
+            })
+        return {"count": len(out), "items": out}
+
+
+@app.delete("/reminders/{rid}", dependencies=[Depends(require_token)])
+def cancel_reminder_endpoint(rid: int):
+    with session_scope() as s:
+        a = s.get(ScheduledAction, rid)
+        if not a or a.action_type != "personal_reminder":
+            raise HTTPException(404, "reminder not found")
+        a.status = "cancelled"
+        return {"ok": True, "id": rid, "status": "cancelled"}
 
 
 @app.post("/run-check", dependencies=[Depends(require_token)])

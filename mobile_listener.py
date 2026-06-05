@@ -228,6 +228,31 @@ def _execute_due_actions(dc: ChatRaceDashboardClient) -> int:
                 except Exception: pass
                 done += 1
                 continue
+            if a.action_type == "personal_reminder":
+                # ‫תזכורת ‫אישית — ‫רק ‫שולח ‫טלגרם ‫עם ‫הקונטקסט. ‫לא ‫עושה ‫פעולה ‫בשיחה.‬
+                # ‫`note` ‫מכיל ‫את ‫הטקסט ‫של ‫התזכורת ‫(למה ‫חוזרים, ‫על ‫מה).‬
+                context_text = (a.note or "").strip() or "(ללא הקשר)"
+                due_str = a.due_at.strftime("%d/%m %H:%M")
+                # ‫אם ‫יש ‫טלפון ‫"NA" — ‫זו ‫תזכורת ‫כללית ‫בלי ‫לקוח ‫ספציפי.‬
+                phone_line = ""
+                name_line = ""
+                if a.target_phone and a.target_phone not in ("NA", "-", ""):
+                    phone_line = f"📞 <code>{a.target_phone}</code>\n"
+                if a.target_name:
+                    name_line = f"👤 <b>{a.target_name}</b>\n"
+                try:
+                    from telegram_router import _send
+                    _send(
+                        f"⏰ <b>תזכורת אישית</b>  ({due_str})\n"
+                        f"{name_line}{phone_line}"
+                        f"<blockquote>{context_text[:1000]}</blockquote>"
+                    )
+                    mark_action_done(a.id, "done", note="reminder sent")
+                except Exception as e:
+                    log.exception(f"reminder send failed: {e}")
+                    mark_action_done(a.id, "skipped", note=f"telegram failed: {str(e)[:200]}")
+                done += 1
+                continue
             if a.action_type == "archive_if_no_reply":
                 ok = dc.archive_conversation(a.target_phone, archive=True)
                 mark_action_done(a.id, "done" if ok else "skipped",
