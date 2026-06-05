@@ -29,8 +29,11 @@ log = logging.getLogger("stock_watcher.mobile_listener")
 # How often to poll ConnectOp for new conversations (seconds)
 POLL_INTERVAL_SEC = int(os.environ.get("MOBILE_POLL_INTERVAL_SEC", "30"))
 
-# Skip "stale" inbound that's already older than this when listener catches up
-SKIP_OLDER_THAN_SEC = 600   # 10 min — anything older we don't backfill
+# Skip "stale" inbound that's already older than this when listener catches up.
+# ‫**מ-06/2026** — ‫הוגדל ‫ל-30 ‫דק' ‫כי ‫במצב ‫Notify-Only ‫עלות ‫ההתראה ‫היא ‫$0.
+# ‫אין ‫סיבה ‫לדלג ‫על ‫הודעות ‫שלא ‫עברו ‫הרבה ‫זמן. ‫מקרה ‫שזה ‫תפס: ‫deploy ‫טרי
+# ‫והbot ‫חזר ‫אחרי 11 ‫דק' — ‫הודעה ‫מ-14:00 ‫שעובדה ‫ב-14:11 ‫דולגה ‫בגלל ‫10 ‫דק' ‫סף.
+SKIP_OLDER_THAN_SEC = 1800   # 30 min
 
 # Wait this long after a customer message before processing (let the bot finish)
 DEBOUNCE_SEC = 8
