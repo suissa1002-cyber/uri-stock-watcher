@@ -158,6 +158,23 @@ def remind_tasks_endpoint(dry_run: bool = False):
 
 # ─── Mobile mode endpoints ──────────────────────────────────────────
 
+@app.get("/quality-report", dependencies=[Depends(require_token)])
+def quality_report(days: int = 7):
+    """‫דוח אירועי איכות מ-N הימים האחרונים — ‫תיקונים, תסכולים, flags ידניים."""
+    from db import list_quality_events
+    events = list_quality_events(days=days, limit=200)
+    by_type = {}
+    for e in events:
+        t = e.get("event_type", "?")
+        by_type[t] = by_type.get(t, 0) + 1
+    return {
+        "days": days,
+        "total": len(events),
+        "by_type": by_type,
+        "events": events,
+    }
+
+
 @app.get("/debug/telegram-messages", dependencies=[Depends(require_token)])
 def debug_telegram_messages(limit: int = 20):
     """‫דיבאג: ‫רואה את הזיכרון של הודעות הטלגרם.‬"""

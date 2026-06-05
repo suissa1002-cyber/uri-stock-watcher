@@ -20,7 +20,37 @@ from db import (
     get_pending_by_telegram_id,
     record_telegram_message, get_recent_telegram_messages,
     find_telegram_message_by_id,
+    log_quality_event,
 )
+
+
+# ‫מילות מפתח לזיהוי תיקון/תסכול של אסי על תשובה קודמת של אורי‬
+_CORRECTION_KEYWORDS = [
+    "לא נכון", "טעות", "טעית", "שגוי", "לא מדויק",
+    "זה לא", "אמרתי", "ביקשתי", "כתבתי", "אני אמרתי",
+    "שוב", "פעם נוספת", "עוד פעם",
+    "המצאת", "המציא", "הזה", "בכלל לא",
+    "תתאמץ", "מטריח", "מתסכל", "ping pong", "פינג פונג",
+    "לא עובד", "לא הבנת", "כבר אמרתי",
+]
+_MANUAL_FLAG_KEYWORDS = ["#flag", "#bug", "#error", "תוקן", "ביג", "באג"]
+
+
+def _detect_quality_issue(user_text: str) -> tuple[str, str]:
+    """
+    ‫בודק אם הודעת אסי היא ‏תיקון/תסכול על תשובה קודמת של אורי.‬
+    ‫מחזיר ‫(event_type, keywords) ‫או (None, '') אם לא.‬
+    """
+    txt = (user_text or "").lower()
+    # Manual flag has priority
+    for kw in _MANUAL_FLAG_KEYWORDS:
+        if kw in txt:
+            return ("manual_flag", kw)
+    # Auto-correction patterns
+    matched = [kw for kw in _CORRECTION_KEYWORDS if kw in txt]
+    if matched:
+        return ("correction", ", ".join(matched[:3]))
+    return (None, "")
 
 log = logging.getLogger("stock_watcher.telegram_router")
 
@@ -217,6 +247,22 @@ def handle_command(text: str, chat_id: int,
                                   telegram_msg_id=incoming_telegram_msg_id)
     except Exception as e:
         log.warning(f"failed to record user msg: {e}")
+
+    # ‫זיהוי ‫אוטומטי ‫של ‫תיקון/תסכול ‫על ‫תשובה ‫קודמת ‫של ‫אורי‬
+    try:
+        event_type, keywords = _detect_quality_issue(text)
+        if event_type:
+            # ‫השג ‫את ‫התשובה ‫האחרונה ‫של ‫הbot ‫בchat‬
+            recent = get_recent_telegram_messages(chat_id, limit=4, minutes_back=120)
+            bot_prev = ""
+            for m in reversed(recent):
+                if m.get("role") == "assistant":
+                    bot_prev = m.get("text", "")
+                    break
+            log_quality_event(chat_id, text, bot_prev, event_type, keywords)
+            log.info(f"quality event logged: {event_type} ({keywords})")
+    except Exception as e:
+        log.warning(f"quality event logging failed: {e}")
 
     # ‫נסה למצוא את הPendingReply שעליו אסי הגיב‬
     reply_context = None

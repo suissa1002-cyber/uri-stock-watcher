@@ -83,6 +83,33 @@ class PendingReply(Base):
         }
 
 
+class QualityEvent(Base):
+    """
+    ‫תיעוד מקרים שבהם אורי טעה ואסי תיקן או הביע תסכול.‬
+    ‫מטרה: ‫זיהוי ‫תבניות ‫שגיאה ‫חוזרות ‫כדי ‫לחזק ‫prompt ‫בעתיד.‬
+
+    ‫סיווג ‫אוטומטי: ‫מילות ‫מפתח ‫בהודעה ‫של ‫אסי ‫(לא, ‫טעית, ‫שוב, ‫זה ‫לא ‫עובד).‬
+    ‫סיווג ‫ידני: ‫אסי ‫מגיב ‫עם ‫"FLAG" ‫או ‫"#bug" ‫על ‫תשובה ‫של ‫אורי.‬
+    """
+    __tablename__ = "quality_events"
+
+    id              = Column(Integer, primary_key=True)
+    chat_id         = Column(BigInteger, nullable=False, index=True)
+    ts              = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                              nullable=False, index=True)
+    # ‫מה ‫אסי ‫שלח ‫(הקריאה ‫שהפעילה ‫את ‫הזיהוי)‬
+    user_message    = Column(Text, default="")
+    # ‫מה ‫הbot ‫אמר ‫קודם ‫(ההודעה ‫שאסי ‫תיקן/הביע ‫תסכול ‫עליה)‬
+    bot_previous    = Column(Text, default="")
+    # ‫סוג: ‫'frustration' | 'correction' | 'manual_flag' | 'repeat'‬
+    event_type      = Column(String(40), default="correction", nullable=False)
+    # ‫מילות ‫מפתח ‫שהפעילו ‫את ‫הזיהוי ‫(לדיבאג)‬
+    keywords        = Column(String(200), default="")
+    # ‫תבנית ‫מסווגת ‫(ידנית) — ‫"ping_pong", ‫"wrong_product", ‫"hallucination"‬
+    pattern         = Column(String(60), default="")
+    note            = Column(Text, default="")
+
+
 class TelegramMessage(Base):
     """
     ‫זיכרון שיחה לחילופי דברים בטלגרם.‬
@@ -448,6 +475,37 @@ def get_pending_by_telegram_id(telegram_message_id: int) -> Optional[PendingRepl
         return s.execute(
             select(PendingReply).where(PendingReply.telegram_message_id == telegram_message_id)
         ).scalar_one_or_none()
+
+
+def log_quality_event(chat_id: int, user_message: str, bot_previous: str,
+                       event_type: str = "correction", keywords: str = "",
+                       pattern: str = "", note: str = "") -> None:
+    """‫מתעד מקרה שבו אורי טעה לפי הסיווג של אסי או זיהוי אוטומטי.‬"""
+    with session_scope() as s:
+        s.add(QualityEvent(
+            chat_id=chat_id, user_message=user_message[:2000],
+            bot_previous=bot_previous[:4000],
+            event_type=event_type, keywords=keywords[:200],
+            pattern=pattern, note=note[:1000],
+        ))
+
+
+def list_quality_events(days: int = 7, limit: int = 100) -> list[dict]:
+    """‫סיכום של אירועי איכות מ-N הימים האחרונים."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    with session_scope() as s:
+        rows = s.execute(
+            select(QualityEvent).where(QualityEvent.ts >= cutoff)
+                                  .order_by(QualityEvent.ts.desc())
+                                  .limit(limit)
+        ).scalars().all()
+        return [
+            {"id":r.id,"ts":r.ts.isoformat(),"chat_id":r.chat_id,
+             "event_type":r.event_type,"keywords":r.keywords,
+             "pattern":r.pattern,"user_message":r.user_message[:200],
+             "bot_previous":r.bot_previous[:300],"note":r.note}
+            for r in rows
+        ]
 
 
 def record_telegram_message(chat_id: int, role: str, text: str,
