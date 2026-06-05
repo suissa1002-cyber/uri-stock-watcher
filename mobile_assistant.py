@@ -201,6 +201,85 @@ CLAUDE_TOOLS = [
         },
     },
     {
+        "name": "list_active_inbox",
+        "description": (
+            "‫מחזיר ‫רשימה ‫של ‫השיחות ‫הפעילות ‫ב-Inbox ‫(לקוחות ‫שכתבו ‫לאחרונה ‫ולא ‫ארכובו). "
+            "‫שימושי ‫כשאסי ‫שואל ‫'מי ‫מחכה?', ‫'מה ‫קורה ‫עכשיו?', ‫'מי ‫הלקוחות ‫הפעילים?'."
+        ),
+        "input_schema": {"type":"object","properties":{
+            "limit":{"type":"integer","description":"‫כמה ‫להחזיר (ברירת ‫מחדל ‫10)"},
+        }, "required":[]},
+    },
+    {
+        "name": "get_order_by_id",
+        "description": (
+            "‫שולף ‫פרטים ‫של ‫הזמנה ‫ספציפית ‫מ-WC ‫לפי ‫מספר ‫הזמנה. ‫שימושי ‫כשאסי ‫מציין "
+            "‫מספר ‫הזמנה ‫ישירות ‫('הזמנה #46720'). ‫מחזיר ‫שם, ‫טלפון, ‫כתובת, ‫סטטוס, "
+            "‫סכום, ‫מוצרים, ‫שיטת ‫תשלום, ‫שיטת ‫משלוח."
+        ),
+        "input_schema": {"type":"object","properties":{
+            "order_id":{"type":"integer","description":"‫מספר ‫הזמנה ‫(לדוגמה: ‫46720)"},
+        },"required":["order_id"]},
+    },
+    {
+        "name": "send_whatsapp_template",
+        "description": (
+            "‫שולח ‫**template** ‫מאושר ‫של ‫WhatsApp ‫ללקוח. ‫**הכלי ‫היחיד ‫ששולח ‫הודעה "
+            "‫ללקוח ‫שלא ‫כתב ‫לנו ‫ב-24 ‫שעות ‫האחרונות** ‫(WhatsApp ‫API ‫מגביל). "
+            "‫templates ‫זמינים: ‫'new_message' ‫(הכי ‫נפוץ — ‫2 ‫פרמטרים: ‫שם ‫+ ‫גוף ‫הודעה), "
+            "‫'opening_massege' (פתיחה), ‫'order_update_1' (עדכון ‫הזמנה). "
+            "‫**שים ‫לב**: ‫templates ‫לא ‫תומכים ‫ב-\\n, ‫tabs, ‫או ‫4+ ‫רווחים — ‫השתמש "
+            "‫ב-markdown ‫של ‫WhatsApp (*bold*) ‫ו-em-dash ‫כמפרידים."
+        ),
+        "input_schema": {"type":"object","properties":{
+            "phone":{"type":"string","description":"‫טלפון ‫בינלאומי ‫בלי ‫+"},
+            "template_name":{"type":"string","description":"‫שם ‫הtemplate (לדוגמה ‫new_message)"},
+            "parameters":{"type":"array","items":{"type":"string"},"description":"‫רשימת ‫parameters ‫לpriority ‫{{1}}, ‫{{2}} ‫וכו'"},
+        },"required":["phone","template_name","parameters"]},
+    },
+    {
+        "name": "list_customer_tags",
+        "description": (
+            "‫מחזיר ‫את ‫כל ‫התגים ‫הקיימים ‫על ‫לקוח ‫ב-ConnectOp. ‫שימושי ‫להבין ‫מצב — "
+            "‫האם ‫הוא ‫תויג ‫כ-frequent, ‫אם ‫יש ‫'בוצעה ‫הזמנה ‫באתר', ‫או ‫'Anti_bot ‫client'."
+        ),
+        "input_schema": {"type":"object","properties":{
+            "phone":{"type":"string","description":"‫טלפון ‫בינלאומי ‫בלי ‫+"},
+        },"required":["phone"]},
+    },
+    {
+        "name": "add_tag",
+        "description": (
+            "‫מוסיף ‫תג ‫ל-contact ‫ב-ConnectOp. ‫שימושי ‫לסיווג ‫ידני — ‫VIP, ‫מתעניין, "
+            "‫הזמנה ‫עתידית, ‫וכו'. ‫**חשוב**: ‫השתמש ‫תמיד ‫בtag_id ‫קיים (לא ‫תיצור ‫חדשים). "
+            "‫אם ‫לא ‫יודע ‫tag_id — ‫אסי ‫יספק."
+        ),
+        "input_schema": {"type":"object","properties":{
+            "phone":{"type":"string","description":"‫טלפון ‫בינלאומי"},
+            "tag_id":{"type":"integer","description":"‫מזהה ‫התג"},
+        },"required":["phone","tag_id"]},
+    },
+    {
+        "name": "remove_tag",
+        "description": "‫מסיר ‫תג ‫מ-contact ‫ב-ConnectOp. ‫במיוחד ‫שימושי ‫להסרת ‫'Anti_bot client' (id=255476) ‫כשנפלו ‫עליו ‫בטעות.",
+        "input_schema": {"type":"object","properties":{
+            "phone":{"type":"string","description":"‫טלפון ‫בינלאומי"},
+            "tag_id":{"type":"integer","description":"‫מזהה ‫התג"},
+        },"required":["phone","tag_id"]},
+    },
+    {
+        "name": "set_human_mode",
+        "description": (
+            "‫מעביר ‫שיחה ‫למצב ‫'אנושי' (live_chat=1) — ‫הבוט ‫עוצר ‫להגיב ‫אוטומטית, "
+            "‫רק ‫בני-אדם ‫עונים. ‫או ‫מחזיר ‫למצב ‫בוט (live_chat=0). ‫שימושי ‫כשאסי ‫רוצה "
+            "‫לעצור ‫את ‫הבוט ‫על ‫לקוח ‫רגיש ‫ולטפל ‫ידנית."
+        ),
+        "input_schema": {"type":"object","properties":{
+            "phone":{"type":"string"},
+            "enable":{"type":"boolean","description":"True = ‫עצור ‫בוט (אנושי). ‫False = ‫הפעל ‫בוט ‫שוב"},
+        },"required":["phone","enable"]},
+    },
+    {
         "name": "send_message_now",
         "description": (
             "‫שולח **מיידית** ‫הודעת WhatsApp ‫ללקוח. ‫קרא לזה כשאסי ‫מאשר טיוטה "
@@ -418,6 +497,137 @@ def _tool_cancel_scheduled(action_id: int) -> str:
         a.status = "cancelled"
         a.done_at = datetime.now(timezone.utc)
         return json.dumps({"ok": True, "id": action_id, "cancelled": True}, ensure_ascii=False)
+
+
+def _tool_list_active_inbox(limit: int, dashboard) -> str:
+    """List recent active customer conversations from ConnectOp inbox."""
+    from datetime import datetime, timezone, timedelta
+    IL = timezone(timedelta(hours=3))
+    import time
+    try:
+        resp = dashboard._post_user_php({
+            "op":"conversations","op1":"get","offset":0,
+            "limit":max(5,min(int(limit or 10),50)),"pageName":"inbox",
+        })
+        data = resp.get("data", []) if isinstance(resp, dict) else []
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    now = int(time.time())
+    out = []
+    for x in sorted(data, key=lambda y: -int(y.get("last_active") or 0))[:int(limit or 10)]:
+        la = int(x.get("last_active") or 0)
+        when = datetime.fromtimestamp(la, tz=timezone.utc).astimezone(IL).strftime("%d/%m %H:%M") if la else "?"
+        age_min = (now - la) // 60 if la else 0
+        out.append({
+            "phone":       str(x.get("ms_id","")),
+            "name":        x.get("full_name") or "",
+            "last_active": when,
+            "minutes_ago": age_min,
+            "last_msg":    (x.get("last_msg") or "")[:120],
+            "archived":    bool(x.get("archived")),
+            "live_chat":   bool(x.get("live_chat") == "1"),
+        })
+    return json.dumps({"count": len(out), "conversations": out}, ensure_ascii=False)
+
+
+def _tool_get_order_by_id(order_id: int) -> str:
+    """Fetch a specific WC order by id with all details."""
+    import requests
+    WC = os.environ['WC_STORE_URL'].rstrip('/')
+    WC_AUTH = (os.environ['WC_CONSUMER_KEY'], os.environ['WC_CONSUMER_SECRET'])
+    try:
+        r = requests.get(f"{WC}/wp-json/wc/v3/orders/{int(order_id)}",
+                         auth=WC_AUTH, timeout=15, headers={"User-Agent":"Mozilla/5.0"})
+        if r.status_code == 404:
+            return json.dumps({"error": f"order #{order_id} not found"}, ensure_ascii=False)
+        if r.status_code != 200:
+            return json.dumps({"error": f"WC returned {r.status_code}"}, ensure_ascii=False)
+        o = r.json()
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    b = o.get("billing", {})
+    sh = o.get("shipping", {})
+    addr_src = sh if (sh.get("address_1") or sh.get("city")) else b
+    full_address = " ".join(filter(None,[
+        addr_src.get("address_1",""),addr_src.get("address_2",""),
+        addr_src.get("city",""),addr_src.get("postcode",""),
+    ])).strip()
+    return json.dumps({
+        "id":     o["id"],
+        "status": o.get("status"),
+        "date":   (o.get("date_created") or "")[:16].replace("T"," "),
+        "total":  f"{o.get('total','?')} {o.get('currency','ILS')}",
+        "customer": f"{b.get('first_name','')} {b.get('last_name','')}".strip(),
+        "phone":  b.get("phone",""),
+        "email":  b.get("email",""),
+        "billing_city":         b.get("city",""),
+        "shipping_full_address":full_address,
+        "shipping_method":      (o.get("shipping_lines") or [{}])[0].get("method_title","?"),
+        "payment_method":       o.get("payment_method_title",""),
+        "items": [it.get("name","")[:80] for it in (o.get("line_items") or [])],
+        "customer_note":        o.get("customer_note",""),
+    }, ensure_ascii=False)
+
+
+def _tool_send_whatsapp_template(phone: str, template_name: str,
+                                   parameters: list, dashboard) -> str:
+    """Send a pre-approved WhatsApp template (bypasses 24h window)."""
+    try:
+        resp = dashboard.send_whatsapp_template(
+            ms_id=phone.strip(), template_name=template_name,
+            parameters=list(parameters or []),
+        )
+        ok = isinstance(resp, dict) and resp.get("status","").upper() == "OK"
+        return json.dumps({
+            "ok": ok, "template": template_name, "phone": phone,
+            "sent_at_il": _now_il_str(),
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _tool_list_customer_tags(phone: str) -> str:
+    """List tags on a contact via ConnectOp public API."""
+    from shared.connectop_client import ConnectOpClient
+    try:
+        co = ConnectOpClient.from_env()
+        tags = co.get_contact_tags(phone.strip()) or []
+        return json.dumps([{"id":t.get("id"),"name":t.get("name")} for t in tags], ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def _tool_add_tag(phone: str, tag_id: int) -> str:
+    from shared.connectop_client import ConnectOpClient
+    try:
+        co = ConnectOpClient.from_env()
+        co.add_tag(phone.strip(), int(tag_id))
+        return json.dumps({"ok": True, "added": tag_id}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _tool_remove_tag(phone: str, tag_id: int) -> str:
+    from shared.connectop_client import ConnectOpClient
+    try:
+        co = ConnectOpClient.from_env()
+        co.remove_tag(phone.strip(), int(tag_id))
+        return json.dumps({"ok": True, "removed": tag_id}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _tool_set_human_mode(phone: str, enable: bool, dashboard) -> str:
+    """Toggle live_chat (bot off/on) for a conversation."""
+    try:
+        ok = dashboard.set_human_mode([phone.strip()], enable=bool(enable))
+        return json.dumps({
+            "ok": bool(ok), "phone": phone,
+            "human_mode": bool(enable),
+            "meaning": "‫בוט עצור — ‫רק בני אדם עונים" if enable else "‫בוט פעיל",
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
 def _tool_send_message_now(phone: str, text: str) -> str:
@@ -659,6 +869,23 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
             )
         if name == "send_message_now":
             return _tool_send_message_now(args.get("phone",""), args.get("text",""))
+        if name == "list_active_inbox":
+            return _tool_list_active_inbox(args.get("limit", 10), dashboard)
+        if name == "get_order_by_id":
+            return _tool_get_order_by_id(args.get("order_id"))
+        if name == "send_whatsapp_template":
+            return _tool_send_whatsapp_template(
+                args.get("phone",""), args.get("template_name",""),
+                args.get("parameters",[]), dashboard,
+            )
+        if name == "list_customer_tags":
+            return _tool_list_customer_tags(args.get("phone",""))
+        if name == "add_tag":
+            return _tool_add_tag(args.get("phone",""), args.get("tag_id"))
+        if name == "remove_tag":
+            return _tool_remove_tag(args.get("phone",""), args.get("tag_id"))
+        if name == "set_human_mode":
+            return _tool_set_human_mode(args.get("phone",""), args.get("enable", True), dashboard)
         if name == "schedule_send_message_if_no_reply":
             return _tool_schedule_send_message_if_no_reply(
                 args.get("phone",""), args.get("name",""),
