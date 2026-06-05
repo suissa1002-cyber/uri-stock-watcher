@@ -506,16 +506,10 @@ def _handle_query(question: str, context: Optional[PendingReply] = None,
         )
         full_question = prefix + question
 
-    # ‫שלוף 5 ‏הודעות אחרונות בchat לזיכרון שיחה‬
-    # ‫(מסיר את ההודעה הנוכחית — ‫היא תהיה ה-input)‬
+    # ‫**Stateless ‫by ‫default** ‫(06/2026): ‫אסי ‫בחר ‫שכל ‫בקשה ‫תהיה ‫עצמאית.
+    # ‫אנחנו ‫**לא** ‫טוענים ‫היסטוריית ‫טלגרם — ‫חוסך ‫טוקנים ‫בכל ‫קריאה.
+    # ‫אם ‫אסי ‫רוצה ‫המשכיות, ‫הוא ‫יבקש ‫הכל ‫בבקשה ‫אחת ‫(או ‫יעשה ‫Reply ‫עם ‫הקשר).‬
     history = []
-    if chat_id is not None:
-        try:
-            recent = get_recent_telegram_messages(chat_id, limit=8, minutes_back=30)
-            # ‫הכל חוץ מההודעה האחרונה (היא הנוכחית — ‫כבר נשמרה)‬
-            history = recent[:-1] if recent else []
-        except Exception as e:
-            log.warning(f"failed to load chat history: {e}")
 
     try:
         answer = answer_query(full_question, dashboard=dc, history=history)

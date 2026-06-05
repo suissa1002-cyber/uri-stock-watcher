@@ -1098,12 +1098,13 @@ def draft_response(phone: str, customer_name: str, customer_message: str,
     messages = [{"role": "user", "content": user_msg}]
 
     # ‫Iterate tool calls up to 5 turns
-    # ‫05/06/2026 ‫— ‫הועבר ‫מ-Sonnet ‫ל-Haiku ‫כי ‫Sonnet ‫שרף ‫$3+ ‫ביום ‫אחד.‬
-    # ‫אם ‫hallucinations ‫קריטיים ‫(כמו ‫"Obsidian Black" ‫במקום ‫"Moonsto") ‫חוזרים — ‫להחליף ‫חזרה.‬
+    # ‫06/2026 ‫— ‫חזרה ‫ל-Sonnet ‫אחרי ‫מעבר ‫ל-Notify-Only mode: ‫draft_response ‫רץ
+    # ‫רק ‫כשאסי ‫מבקש ‫מפורש ‫(Reply ‫על ‫התראה + ‫"טיוטה"). ‫זה ‫לא ‫auto-mode, ‫אז ‫אין
+    # ‫עוד ‫סכנת ‫הוצאות ‫עצומות. ‫Sonnet ‫מבטל ‫הזיות ‫על ‫תעתיק ‫עברי (שאיומי → Find X9).‬
     final_text = None
     for turn in range(5):
         resp = client.messages.create(
-            model="claude-haiku-4-5",
+            model="claude-sonnet-4-5",
             max_tokens=1200,
             # ‫prompt caching: ‫הsystem identical בין קריאות → ‫90% הנחה‬
             system=[{
@@ -1228,14 +1229,13 @@ def answer_query(question: str, dashboard=None,
         messages.append({"role": role, "content": txt})
     messages.append({"role": "user", "content": question})
 
-    # ‫Haiku 4.5 ‫עם prompt ‫מחוזק ‫(05/06/2026): ‫אחרי ‫שhaiku ‫המציא ‫"Obsidian‬
-    # ‫Black" ‫במקום ‫"Moonsto", ‫הוספתי ‫כלל ‫ברזל ‫מפורש ‫ב-prompt ‫עם דוגמה‬
-    # ‫מהמקרה ‫הזה. ‫מנסים שוב ‫להישאר ‫על ‫Haiku (~$30/חודש).‬
-    # ‫אם hallucinations חוזרים → ‫להחליף ‫חזרה ‫ל-`claude-sonnet-4-5`.‬
+    # ‫**Sonnet 4.5** ‫(06/2026): ‫handle_query ‫רץ ‫רק ‫כשאסי ‫מבקש ‫מפורש ‫(Reply ‫על ‫התראה
+    # ‫או ‫שאילתה ‫כללית). ‫זה ‫**לא ‫auto-mode** — ‫כל ‫קריאה ‫היא ‫מבקשת ‫במזיד. ‫לכן ‫ניתן
+    # ‫להשתמש ‫בSonnet ‫ללא ‫סיכון ‫עלות. ‫זה ‫מבטל ‫הזיות ‫שגרמו ‫בעבר ‫(שאיומי → Find X9).‬
     final_text = None
     for turn in range(6):
         resp = client.messages.create(
-            model="claude-haiku-4-5",
+            model="claude-sonnet-4-5",
             max_tokens=1500,
             system=[{
                 "type": "text",
