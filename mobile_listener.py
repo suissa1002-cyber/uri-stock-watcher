@@ -40,25 +40,83 @@ _thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 
 
+def _classify_conversation(msgs_sorted_desc: list, phone: str) -> tuple[str, str]:
+    """
+    ‫קביעת ‫סיווג ‫שיחה: 'new' ‫או 'followup'.
+    ‫הקריטריון: ‫אם ‫**אסי/אנושי ‫כבר ‫שלח ‫תשובה** ‫בשיחה ‫בתוך 24h ‫האחרונות → 'followup'.
+    ‫אחרת — 'new'.
+
+    ‫מחזיר ‫גם ‫`previous_context` ‫(summary ‫מהdraft ‫האחרון, ‫אם ‫קיים) ‫כדי ‫לחסוך tool ‫calls.
+    """
+    import time as _time
+    from db import session_scope as _ss, PendingReply as _PR
+    from sqlalchemy import select as _select, desc as _desc
+
+    now_ts = int(_time.time())
+    cutoff_ts = now_ts - 24 * 3600  # 24h ‫אחורה
+
+    # ‫חיפוש ‫הודעה ‫יוצאת ‫אנושית (sent_by != 0) ‫תוך 24h
+    has_human_reply = False
+    for m in msgs_sorted_desc:
+        if m.get("direction") != "out":
+            continue
+        m_ts = int(m.get("ts") or 0)
+        if m_ts < cutoff_ts:
+            break  # ‫רשימה ‫ממוינת ‫desc — ‫מכאן ‫הכל ‫ישן ‫יותר
+        sb = m.get("sent_by")
+        if sb not in (None, 0, "0", ""):
+            has_human_reply = True
+            break
+
+    if not has_human_reply:
+        return ("new", "")
+
+    # ‫זה ‫המשך — ‫נביא ‫context_summary ‫מהdraft ‫האחרון
+    prev_ctx = ""
+    with _ss() as _s:
+        prev = _s.execute(
+            _select(_PR).where(
+                _PR.customer_phone == phone,
+            ).order_by(_desc(_PR.created_at)).limit(1)
+        ).scalars().first()
+        if prev and prev.context_summary:
+            prev_ctx = prev.context_summary
+    return ("followup", prev_ctx)
+
+
 def _process_new_inbound(phone: str, name: str, text: str, ts: int,
-                          dc: ChatRaceDashboardClient) -> None:
+                          dc: ChatRaceDashboardClient,
+                          msgs_sorted_desc: list = None) -> None:
     """Handle a single newly-detected customer inbound message."""
     # Import lazily so the module loads even without the optional Claude dep
     try:
-        from mobile_assistant import draft_response
+        from mobile_assistant import draft_response, draft_followup
     except ImportError as e:
         log.warning(f"mobile_assistant not available: {e}")
         return
-    from telegram_router import send_draft_to_asi
+    from telegram_router import send_draft_to_asi, send_followup_to_asi
     from db import add_pending_reply, update_reply_telegram_id
 
-    log.info(f"[mobile] processing new inbound: {phone} ({name}) — {text[:60]!r}")
+    # ‫קביעת ‫סיווג: ‫חדשה ‫או ‫המשך
+    mode, prev_ctx = ("new", "")
+    if msgs_sorted_desc:
+        mode, prev_ctx = _classify_conversation(msgs_sorted_desc, phone)
 
-    # 1) Generate context + draft via Claude
+    log.info(f"[mobile] processing {mode} inbound: {phone} ({name}) — {text[:60]!r}")
+
+    # 1) Generate draft via Claude (cheap or full path)
+    summary = ""
+    draft   = ""
     try:
-        summary, draft = draft_response(phone, name, text, dashboard=dc)
+        if mode == "followup":
+            # ‫קצר ‫וזול — ‫השתמש ‫בcontext ‫קיים
+            draft = draft_followup(phone, name, text,
+                                    previous_context=prev_ctx, dashboard=dc)
+            summary = "(המשך שיחה — context מהdraft הקודם)"
+        else:
+            summary, draft = draft_response(phone, name, text, dashboard=dc)
     except Exception as e:
-        log.exception(f"draft_response failed: {e}")
+        log.exception(f"draft generation failed ({mode}): {e}")
         summary = f"⚠️ Claude draft failed: {e}"
         draft   = "(לא הצלחתי לנסח טיוטה אוטומטית — אנא טפל ידנית)"
 
@@ -71,9 +129,12 @@ def _process_new_inbound(phone: str, name: str, text: str, ts: int,
         claude_draft=draft,
     )
 
-    # 3) Send to Asi
+    # 3) Send to Asi — different format per mode
     try:
-        msg_id = send_draft_to_asi(reply)
+        if mode == "followup":
+            msg_id = send_followup_to_asi(reply)
+        else:
+            msg_id = send_draft_to_asi(reply)
         if msg_id:
             update_reply_telegram_id(reply.id, msg_id)
     except Exception as e:
@@ -196,7 +257,9 @@ def _poll_once(dc: ChatRaceDashboardClient) -> int:
             log.info(f"  cancelled {cancelled} pending conditional action(s) for {phone} (customer replied)")
 
         # ─── It's a real new inbound that needs attention ───
-        _process_new_inbound(phone, name, text, last_in_ts, dc)
+        # ‫מעבירים ‫את ‫רשימת ‫ההודעות ‫ממוינת ‫desc ‫כדי ‫שהsiווג ‫ידע ‫אם ‫זו ‫שיחה ‫חדשה ‫או ‫המשך‬
+        _process_new_inbound(phone, name, text, last_in_ts, dc,
+                              msgs_sorted_desc=msgs_sorted)
         new_count += 1
         max_ts = max(max_ts, la)
 

@@ -126,6 +126,23 @@ def send_draft_to_asi(reply: PendingReply) -> Optional[int]:
     return _send(body)
 
 
+def send_followup_to_asi(reply: PendingReply) -> Optional[int]:
+    """
+    ‫הודעת ‫טלגרם ‫**קצרה** ‫להמשך ‫שיחה ‫שכבר ‫מנוהלת.
+    ‫בלי ‫כותרת ‫מלאה, ‫בלי ‫summary — ‫רק ‫שם ‫הלקוח + ‫השאלה ‫החדשה + ‫טיוטה.
+    """
+    first_name = (reply.customer_name or "").split()[0] or reply.customer_name or "לקוח"
+    msg_esc   = _escape_html(reply.customer_message)
+    draft_esc = _escape_html(reply.claude_draft)
+    body = (
+        f"🔁  <b>{_escape_html(first_name)}</b>: <i>{msg_esc}</i>\n"
+        f"📝  <b>טיוטה</b>  ·  <code>#{reply.id}</code>\n"
+        f"<blockquote>{draft_esc}</blockquote>\n"
+        f"✏️  <b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ..."
+    )
+    return _send(body)
+
+
 def send_confirmation(reply: PendingReply, status: str) -> None:
     if status == "sent":
         _send(f"✅ נשלח ל-{reply.customer_name} (#{reply.id}).")

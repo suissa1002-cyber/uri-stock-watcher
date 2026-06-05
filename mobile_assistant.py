@@ -998,6 +998,81 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
 # Main entry — draft a response
 # ─────────────────────────────────────────────────────────────────────
 
+# ─── Followup mode (cheaper: short prompt, 2 turns, 400 tokens) ─────
+FOLLOWUP_SYSTEM_PROMPT = """\
+‫אתה ‫אורי, ‫סוכן ‫שירות ‫לקוחות ‫של ‫Green ‫Mobile (Ashdod).
+‫השיחה ‫הזו ‫**כבר ‫מנוהלת** — ‫הלקוח ‫עונה ‫על ‫תשובה ‫קודמת.
+‫תפקידך: ‫לנסח ‫**טיוטה ‫קצרה ‫ויעילה** (1-3 ‫משפטים) ‫שעונה ‫על ‫השאלה.
+
+## ‫כללים
+- ‫**קצר ‫ולעניין** — ‫בלי ‫ברוכים-הבאים, ‫בלי ‫חתימה, ‫בלי ‫אמוג'ים ‫מיותרים.
+- ‫אם ‫יש ‫`previous_context` ‫(להלן) — ‫הסתמך ‫עליו ‫במקום ‫לחפש ‫שוב ‫מחיר/מלאי.
+- ‫אם ‫השאלה ‫**שונה ‫לחלוטין** ‫מהמוצר ‫הקודם — ‫רשאי ‫להשתמש ‫ב-search_product / check_stock,
+  ‫אבל ‫רק ‫**פעם ‫אחת**. ‫אל ‫תעשה ‫חיפוש ‫ידע ‫כשהמידע ‫כבר ‫ב-previous_context.
+- ‫**מחירי ‫משלוח ‫קבועים**: ‫מעל 500₪ ‫חינם · ‫עד 500₪ — 29₪ · ‫אקספרס 89₪.
+- ‫מותג/דגם ‫תמיד ‫באנגלית (Samsung, ‫לא ‫"סמסונג").
+- ‫**אסור**: ‫לא ‫להמציא ‫מק"ט / ‫צבע / ‫מחיר / ‫סניף ‫שלא ‫הופיע ‫ב-previous_context ‫או ‫בתוצאת ‫tool.
+- ‫החזר ‫**רק ‫את ‫הטקסט ‫של ‫הטיוטה** — ‫בלי ‫JSON, ‫בלי ‫summary.
+"""
+
+
+def draft_followup(phone: str, customer_name: str, customer_message: str,
+                    previous_context: str = "", dashboard=None) -> str:
+    """
+    ‫טיוטה ‫קצרה ‫להמשך ‫שיחה ‫שכבר ‫מנוהלת. ‫עד 2 turns, max_tokens=400.
+    ‫`previous_context` = ‫ה-summary ‫שClaude ‫כתב ‫ב-draft ‫הראשון (חוסך ‫tool ‫calls).
+    """
+    client = _get_client()
+    if not client:
+        return f"({customer_name.split()[0] if customer_name else 'לקוח'}, ‫טפל ‫ידנית — Claude ‫לא ‫זמין)"
+
+    user_msg = (
+        f"‫הלקוח ‫עונה ‫בהמשך ‫שיחה. ‫הוא ‫כתב:\n"
+        f'"{customer_message}"\n\n'
+    )
+    if previous_context:
+        user_msg += f"## previous_context ‫(מה ‫שכבר ‫ידוע ‫על ‫הלקוח/השאלה):\n{previous_context}\n\n"
+    user_msg += (
+        f"‫שם: {customer_name} · ‫טלפון: {phone}\n"
+        f"‫כתוב ‫טיוטה ‫קצרה (1-3 ‫משפטים). ‫אל ‫תחזור ‫על ‫הקשרים ‫הידועים — ‫רק ‫תענה ‫על ‫השאלה ‫הנוכחית."
+    )
+    messages = [{"role": "user", "content": user_msg}]
+
+    final_text = None
+    for turn in range(2):  # ‫מקסימום 2 turns ‫(לעומת 5 ‫בdraft_response)
+        resp = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=400,  # ‫קצר ‫בכוונה
+            system=[{
+                "type": "text",
+                "text": FOLLOWUP_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            tools=CLAUDE_TOOLS,  # ‫זמין ‫אבל ‫הprompt ‫מדבק
+            messages=messages,
+        )
+        tool_uses = [b for b in resp.content if b.type == "tool_use"]
+        if tool_uses:
+            messages.append({"role": "assistant", "content": resp.content})
+            tool_results = []
+            for tu in tool_uses:
+                output = _run_tool(tu.name, tu.input, phone, dashboard)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": output,
+                })
+            messages.append({"role": "user", "content": tool_results})
+            continue
+        text_blocks = [b for b in resp.content if b.type == "text"]
+        final_text = "".join(b.text for b in text_blocks).strip()
+        break
+
+    if not final_text:
+        return "(‫לא ‫הצלחתי ‫לנסח ‫טיוטה ‫קצרה — ‫טפל ‫ידנית)"
+    return final_text
+
+
 def draft_response(phone: str, customer_name: str, customer_message: str,
                     dashboard=None) -> Tuple[str, str]:
     """
