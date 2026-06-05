@@ -848,14 +848,14 @@ def answer_query(question: str, dashboard=None,
         messages.append({"role": role, "content": txt})
     messages.append({"role": "user", "content": question})
 
-    # ‫Sonnet 4.5 — ‫Haiku confabulated colors (reported 'Obsidian Black'‬
-    # ‫for a product the tool clearly returned as 'Moonsto'). ‫טעות עובדתית‬
-    # ‫בנושא מלאי = ‫קריטית. ‫מצב נכון: ‫Sonnet ל-queries (~$0.04/שאילתה,‬
-    # ‫~$60/חודש). ‫עדיף ‫תקציב יקר ‫על ‫מערכת לא אמינה.‬
+    # ‫Haiku 4.5 ‫עם prompt ‫מחוזק ‫(05/06/2026): ‫אחרי ‫שhaiku ‫המציא ‫"Obsidian‬
+    # ‫Black" ‫במקום ‫"Moonsto", ‫הוספתי ‫כלל ‫ברזל ‫מפורש ‫ב-prompt ‫עם דוגמה‬
+    # ‫מהמקרה ‫הזה. ‫מנסים שוב ‫להישאר ‫על ‫Haiku (~$30/חודש).‬
+    # ‫אם hallucinations חוזרים → ‫להחליף ‫חזרה ‫ל-`claude-sonnet-4-5`.‬
     final_text = None
     for turn in range(6):
         resp = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-haiku-4-5",
             max_tokens=1500,
             system=[{
                 "type": "text",
