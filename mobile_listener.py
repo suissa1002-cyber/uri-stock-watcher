@@ -170,10 +170,13 @@ def _poll_once(dc: ChatRaceDashboardClient) -> int:
             max_ts = max(max_ts, la)
             continue
 
-        # ‫הלקוח השיב — ‫אם יש מתזמן ארכוב פתוח עליו, ‫בטל אותו‬
-        cancelled = cancel_scheduled_for_phone(phone, "archive_if_no_reply")
+        # ‫הלקוח השיב — ‫בטל כל מתזמן ‫מותנה ‫שהיה פתוח עליו‬
+        # ‫(archive_if_no_reply + send_message_if_no_reply)‬
+        cancelled = 0
+        for cond_type in ("archive_if_no_reply", "send_message_if_no_reply"):
+            cancelled += cancel_scheduled_for_phone(phone, cond_type)
         if cancelled:
-            log.info(f"  cancelled {cancelled} pending archive(s) for {phone} (customer replied)")
+            log.info(f"  cancelled {cancelled} pending conditional action(s) for {phone} (customer replied)")
 
         # ─── It's a real new inbound that needs attention ───
         _process_new_inbound(phone, name, text, last_in_ts, dc)
@@ -192,6 +195,23 @@ def _execute_due_actions(dc: ChatRaceDashboardClient) -> int:
     done = 0
     for a in due:
         try:
+            if a.action_type == "send_message_if_no_reply":
+                # ‫זהה ל-send_message — ‫הביטול אוטומטי קורה ב-_poll_once‬
+                # ‫כשהלקוח עונה. ‫אם הגענו לכאן, ‫הלקוח לא ענה → ‫שלח.‬
+                text = (a.note or "").split("text:", 1)[-1] if a.note else ""
+                from shared.connectop_client import ConnectOpClient
+                co = ConnectOpClient.from_env()
+                co.send_text_as_human(a.target_phone, text)
+                mark_action_done(a.id, "done", note="sent (no customer reply)")
+                try:
+                    from telegram_router import _send
+                    _send(f"📨 <b>הודעה ‫מותנית נשלחה</b> ‫(הלקוח לא ‫ענה)\n"
+                          f"👤 {a.target_name}\n"
+                          f"📞 <code>{a.target_phone}</code>\n"
+                          f"<blockquote>{text[:300]}</blockquote>")
+                except Exception: pass
+                done += 1
+                continue
             if a.action_type == "send_message":
                 # ‫`note` ‫מתחיל ב-"text:..." ‫(שמרתי שם את הטקסט)‬
                 text = (a.note or "").split("text:", 1)[-1] if a.note else ""

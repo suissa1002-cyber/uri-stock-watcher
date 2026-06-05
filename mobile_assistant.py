@@ -220,6 +220,26 @@ CLAUDE_TOOLS = [
         },
     },
     {
+        "name": "schedule_send_message_if_no_reply",
+        "description": (
+            "‫מתזמן שליחת הודעה ל-WhatsApp **בתנאי שהלקוח לא ענה בינתיים**. "
+            "‫שימושי לתרחישים כמו: ‫'אם הלקוח לא יוסיף הבהרה עד 9 בבוקר, ‫שלח לו "
+            "‫הודעה עם שאלת הבהרה'. ‫ההיגיון: ‫אם הלקוח שולח הודעה כלשהי בין "
+            "‫עכשיו לזמן הnמשלוח, ‫המתזמן ‫**מתבטל אוטומטית** ‫(אין צורך לשלוח "
+            "‫הבהרה כי כבר ‫קיבלנו ‫תוכן ‫חדש). ‫אם הלקוח שותק → ‫ההודעה נשלחת."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type":"string","description":"‫טלפון בינלאומי בלי +"},
+                "name":  {"type":"string","description":"‫שם לקוח לתיעוד"},
+                "text":  {"type":"string","description":"‫הטקסט שיישלח בWhatsApp אם הלקוח שותק"},
+                "delay_minutes": {"type":"integer","description":"‫כמה דקות לחכות עד שליחה (1-1440)"},
+            },
+            "required": ["phone","text","delay_minutes"],
+        },
+    },
+    {
         "name": "schedule_archive_if_no_reply",
         "description": (
             "‫מתזמן ארכוב **מותנה** — ‫בעוד N דקות, ‫**אם הלקוח לא ענה בינתיים**, "
@@ -381,6 +401,33 @@ def _tool_cancel_scheduled(action_id: int) -> str:
         a.status = "cancelled"
         a.done_at = datetime.now(timezone.utc)
         return json.dumps({"ok": True, "id": action_id, "cancelled": True}, ensure_ascii=False)
+
+
+def _tool_schedule_send_message_if_no_reply(phone: str, name: str,
+                                             text: str, delay_minutes: int) -> str:
+    """Schedule a conditional message send — only fires if customer doesn't reply."""
+    from datetime import datetime, timezone, timedelta
+    from db import add_scheduled_action
+    try:
+        delay = max(1, min(int(delay_minutes), 1440))
+        due = datetime.now(timezone.utc) + timedelta(minutes=delay)
+        a = add_scheduled_action(
+            action_type="send_message_if_no_reply",
+            target_phone=phone.strip(),
+            target_name=name or "",
+            due_at=due,
+            note=f"text:{text[:500]}",
+        )
+        IL = timezone(timedelta(hours=3))
+        due_local = due.astimezone(IL).strftime("%d/%m %H:%M")
+        return json.dumps({
+            "ok": True, "id": a.id,
+            "due_at_il": due_local, "delay_minutes": delay,
+            "preview": text[:200],
+            "note": "‫אם הלקוח יענה לפני אז → ‫המתזמן מתבטל. ‫אם שותק → ‫תישלח האזהרה.",
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
 def _tool_schedule_send_message(phone: str, name: str, text: str,
@@ -568,6 +615,11 @@ def _run_tool(name: str, args: dict, phone: str, dashboard) -> str:
             )
         if name == "schedule_send_message":
             return _tool_schedule_send_message(
+                args.get("phone",""), args.get("name",""),
+                args.get("text",""), args.get("delay_minutes", 60),
+            )
+        if name == "schedule_send_message_if_no_reply":
+            return _tool_schedule_send_message_if_no_reply(
                 args.get("phone",""), args.get("name",""),
                 args.get("text",""), args.get("delay_minutes", 60),
             )
