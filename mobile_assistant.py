@@ -1020,12 +1020,14 @@ def draft_response(phone: str, customer_name: str, customer_message: str,
     )
     messages = [{"role": "user", "content": user_msg}]
 
-    # Iterate tool calls up to 6 turns
+    # ‫Iterate tool calls up to 5 turns
+    # ‫05/06/2026 ‫— ‫הועבר ‫מ-Sonnet ‫ל-Haiku ‫כי ‫Sonnet ‫שרף ‫$3+ ‫ביום ‫אחד.‬
+    # ‫אם ‫hallucinations ‫קריטיים ‫(כמו ‫"Obsidian Black" ‫במקום ‫"Moonsto") ‫חוזרים — ‫להחליף ‫חזרה.‬
     final_text = None
     for turn in range(5):
         resp = client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=1500,
+            model="claude-haiku-4-5",
+            max_tokens=1200,
             # ‫prompt caching: ‫הsystem identical בין קריאות → ‫90% הנחה‬
             system=[{
                 "type": "text",

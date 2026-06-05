@@ -262,6 +262,27 @@ def cancel_reminder_endpoint(rid: int):
         return {"ok": True, "id": rid, "status": "cancelled"}
 
 
+@app.post("/admin/cancel-old-drafts", dependencies=[Depends(require_token)])
+def cancel_old_drafts(hours: int = 2):
+    """‫מבטל ‫כל ‫`PendingReply` ‫עם ‫סטטוס ‫`waiting` ‫שנוצר ‫לפני ‫>X ‫שעות.
+    ‫עוזר ‫במקרה ‫של ‫הצטברות ‫drafts ‫ישנים ‫שעשו ‫רעש ‫למנגנון ‫הdedup."""
+    from db import PendingReply
+    from datetime import timedelta
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cancelled_ids = []
+    with session_scope() as s:
+        items = list(s.execute(
+            select(PendingReply).where(
+                PendingReply.status == "waiting",
+                PendingReply.created_at < cutoff,
+            )
+        ).scalars().all())
+        for it in items:
+            it.status = "cancelled_stale"
+            cancelled_ids.append(it.id)
+    return {"cancelled_count": len(cancelled_ids), "ids": cancelled_ids}
+
+
 @app.post("/run-check", dependencies=[Depends(require_token)])
 def run_check_endpoint(dry_run: bool = False):
     summary = run_check(dry_run=dry_run)
