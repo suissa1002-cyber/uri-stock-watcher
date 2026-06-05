@@ -103,27 +103,33 @@ def send_draft_to_asi(reply: PendingReply) -> Optional[int]:
     draft_esc  = _escape_html(reply.claude_draft)
 
     body = (
-        f"📥  <b>שיחה חדשה</b>\n"
-        f"👤  {reply.customer_name}\n"
-        f"📞  {reply.customer_phone}\n"
+        f"{_RLM}📥  <b>שיחה חדשה</b>\n"
+        f"{_RLM}👤  {reply.customer_name}\n"
+        f"{_RLM}📞  <code>{reply.customer_phone}</code>\n"
         f"\n"
         f"━━━━━━━━━━━━━━\n"
         f"\n"
-        f"💬  <b>הודעת הלקוח</b>\n"
-        f"<blockquote>{msg_esc}</blockquote>\n"
+        f"{_RLM}💬  <b>הודעת הלקוח</b>\n"
+        f"{_RLM}<blockquote>{msg_esc}</blockquote>\n"
         f"\n"
-        f"🎯  <b>הקשר</b>\n"
-        f"<i>{summary_esc}</i>\n"
-        f"\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"\n"
-        f"📝  <b>טיוטה לאישור</b>  ·  <code>#{reply.id}</code>\n"
-        f"<blockquote>{draft_esc}</blockquote>\n"
+        f"{_RLM}🎯  <b>הקשר</b>\n"
+        f"{_RLM}<i>{summary_esc}</i>\n"
         f"\n"
         f"━━━━━━━━━━━━━━\n"
-        f"✏️  <b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ..."
+        f"\n"
+        f"{_RLM}📝  <b>טיוטה לאישור</b>  ·  <code>#{reply.id}</code>\n"
+        f"{_RLM}<blockquote>{draft_esc}</blockquote>\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"{_RLM}✏️  <b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ..."
     )
     return _send(body)
+
+
+# ‫RLM (Right-to-Left Mark) — ‫תו ‫בלתי-נראה ‫שמכריח ‫טלגרם ‫להציג ‫RTL.
+# ‫חובה ‫כשהשורה ‫מתחילה ‫באמוג'י/אנגלית/מספרים, ‫אחרת ‫הbidi-algorithm
+# ‫מסיק ‫LTR ‫ושם ‫אנגלית/מספרים ‫בצד ‫שמאל ‫במקום ‫ימין.‬
+_RLM = "‏"
 
 
 def send_inbound_notification(reply: PendingReply) -> Optional[int]:
@@ -134,9 +140,10 @@ def send_inbound_notification(reply: PendingReply) -> Optional[int]:
     msg_esc  = _escape_html(reply.customer_message)
     name_esc = _escape_html(reply.customer_name or "לקוח")
     body = (
-        f"📥  <b>{name_esc}</b>  ·  <code>{reply.customer_phone}</code>  ·  <code>#{reply.id}</code>\n"
-        f"<blockquote>{msg_esc}</blockquote>\n"
-        f"<i>💬  Reply <b>טיוטה</b> ‫כדי ‫שאני ‫אכין ‫תשובה ‫עם ‫Claude</i>"
+        f"{_RLM}📥  <b>{name_esc}</b>\n"
+        f"{_RLM}<code>{reply.customer_phone}</code>  ·  <code>#{reply.id}</code>\n"
+        f"{_RLM}<blockquote>{msg_esc}</blockquote>\n"
+        f"{_RLM}<i>💬  ‫השב <b>טיוטה</b> ‫כדי ‫שאכין ‫תשובה</i>"
     )
     return _send(body)
 
@@ -150,10 +157,10 @@ def send_followup_to_asi(reply: PendingReply) -> Optional[int]:
     msg_esc   = _escape_html(reply.customer_message)
     draft_esc = _escape_html(reply.claude_draft)
     body = (
-        f"🔁  <b>{_escape_html(first_name)}</b>: <i>{msg_esc}</i>\n"
-        f"📝  <b>טיוטה</b>  ·  <code>#{reply.id}</code>\n"
-        f"<blockquote>{draft_esc}</blockquote>\n"
-        f"✏️  <b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ..."
+        f"{_RLM}🔁  <b>{_escape_html(first_name)}</b>: <i>{msg_esc}</i>\n"
+        f"{_RLM}📝  <b>טיוטה</b>  ·  <code>#{reply.id}</code>\n"
+        f"{_RLM}<blockquote>{draft_esc}</blockquote>\n"
+        f"{_RLM}✏️  <b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ..."
     )
     return _send(body)
 
