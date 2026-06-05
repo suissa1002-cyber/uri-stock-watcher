@@ -126,6 +126,21 @@ def send_draft_to_asi(reply: PendingReply) -> Optional[int]:
     return _send(body)
 
 
+def send_inbound_notification(reply: PendingReply) -> Optional[int]:
+    """
+    Notify-Only mode: ‫שולח ‫**התראה ‫גולמית ‫בלבד** ‫בלי ‫להפעיל ‫Claude.
+    ‫אסי ‫מחליט ‫אם ‫שווה ‫טיוטה — ‫אם ‫כן, ‫עושה ‫Reply ‫עם ‫"טיוטה".
+    """
+    msg_esc  = _escape_html(reply.customer_message)
+    name_esc = _escape_html(reply.customer_name or "לקוח")
+    body = (
+        f"📥  <b>{name_esc}</b>  ·  <code>{reply.customer_phone}</code>  ·  <code>#{reply.id}</code>\n"
+        f"<blockquote>{msg_esc}</blockquote>\n"
+        f"<i>💬  Reply <b>טיוטה</b> ‫כדי ‫שאני ‫אכין ‫תשובה ‫עם ‫Claude</i>"
+    )
+    return _send(body)
+
+
 def send_followup_to_asi(reply: PendingReply) -> Optional[int]:
     """
     ‫הודעת ‫טלגרם ‫**קצרה** ‫להמשך ‫שיחה ‫שכבר ‫מנוהלת.
@@ -198,6 +213,8 @@ _DEACTIVATE_RE = re.compile(
 _SEND_RE   = re.compile(r"^שלח\b|^send\b", re.IGNORECASE)
 _CANCEL_RE = re.compile(r"^עצור\b|^בטל\b|^cancel\b", re.IGNORECASE)
 _EDIT_RE   = re.compile(r"^שנה\s*[:\-]?\s*(.+)|^edit\s*[:\-]?\s*(.+)", re.IGNORECASE | re.DOTALL)
+# ‫בקשה ‫להפעיל ‫Claude ‫על ‫התראה ‫שכבר ‫נשלחה ‫(Notify-Only mode)
+_DRAFT_RE  = re.compile(r"^טיוטה\b|^טפל\b|^תכין\b|^draft\b", re.IGNORECASE)
 
 
 def parse_command(text: str) -> dict:
@@ -233,6 +250,8 @@ def parse_command(text: str) -> dict:
         return {"action": "send", "reply_id": reply_id}
     if _CANCEL_RE.search(text):
         return {"action": "cancel", "reply_id": reply_id}
+    if _DRAFT_RE.search(text):
+        return {"action": "draft_request", "reply_id": reply_id}
 
     m = _EDIT_RE.search(text)
     if m:
@@ -299,6 +318,63 @@ def handle_command(text: str, chat_id: int,
         m = set_mobile_mode(False)
         send_mobile_status(False)
         return {"ok": True, "action": "deactivate", "active": bool(m.active)}
+
+    # ─── Notify-Only: draft_request ───
+    # ‫אסי ‫עשה ‫Reply ‫על ‫התראה ‫(או ‫כתב ‫"טיוטה #ID") ‫כדי ‫להפעיל ‫Claude ‫על ‫inbound.
+    if action == "draft_request":
+        reply_id_req = cmd.get("reply_id")
+        target = None
+        if reply_id_req:
+            target = get_pending_reply(reply_id_req)
+        elif reply_context:
+            target = reply_context
+        else:
+            # ‫אין ‫reply ‫מפורש — ‫אם ‫יש ‫בדיוק ‫notify_only ‫אחד, ‫זה ‫הוא
+            from db import list_notify_only_replies
+            no = list_notify_only_replies()
+            if len(no) == 1:
+                target = no[0]
+            elif len(no) > 1:
+                lines = [f"⚠️ <b>{len(no)} ‫התראות ‫פתוחות.</b> ‫השב (Reply) ‫על ‫ההתראה ‫הרצויה:"]
+                for w in no[:10]:
+                    lines.append(f"  • <code>#{w.id}</code>  {w.customer_name}  <code>{w.customer_phone}</code>")
+                _send("\n".join(lines))
+                return {"ok": False, "error": "ambiguous_draft_target"}
+            else:
+                _send("❓ ‫אין ‫התראות ‫פתוחות ‫כרגע.")
+                return {"ok": False, "error": "no_pending_notifications"}
+
+        if not target:
+            _send(f"❓ ‫לא ‫מצאתי ‫את ‫ההתראה.")
+            return {"ok": False, "error": "target_not_found"}
+
+        # ‫הפעל ‫Claude ‫ושלח ‫כרטיסיה ‫מלאה
+        try:
+            from mobile_assistant import draft_response
+            from shared.chatrace_dashboard_client import ChatRaceDashboardClient
+            from db import set_reply_status, update_reply_draft, update_reply_telegram_id
+            dc = ChatRaceDashboardClient.from_env()
+            summary, draft = draft_response(
+                target.customer_phone, target.customer_name,
+                target.customer_message, dashboard=dc,
+            )
+            # ‫שמור ‫summary+draft ‫והעבר ‫סטטוס ‫ל-waiting
+            with __import__("db").session_scope() as s:
+                r = s.get(__import__("db").PendingReply, target.id)
+                if r:
+                    r.context_summary = summary
+                    r.claude_draft    = draft
+                    r.status          = "waiting"
+            # ‫טען ‫מחדש ‫עם ‫השדות ‫המעודכנים
+            target = get_pending_reply(target.id)
+            msg_id = send_draft_to_asi(target)
+            if msg_id:
+                update_reply_telegram_id(target.id, msg_id)
+            return {"ok": True, "action": "draft_request", "reply_id": target.id}
+        except Exception as e:
+            log.exception(f"draft_request failed: {e}")
+            _send(f"❌ ‫יצירת ‫טיוטה ‫נכשלה: {e}")
+            return {"ok": False, "error": str(e)}
 
     # ─── Action on a pending reply ───
     # ‫רק אם הפעולה היא באמת send/cancel/edit נדאג לטיוטה ממתינה.‬

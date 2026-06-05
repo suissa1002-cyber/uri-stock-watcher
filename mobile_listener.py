@@ -87,58 +87,40 @@ def _classify_conversation(msgs_sorted_desc: list, phone: str) -> tuple[str, str
 def _process_new_inbound(phone: str, name: str, text: str, ts: int,
                           dc: ChatRaceDashboardClient,
                           msgs_sorted_desc: list = None) -> None:
-    """Handle a single newly-detected customer inbound message."""
-    # Import lazily so the module loads even without the optional Claude dep
-    try:
-        from mobile_assistant import draft_response, draft_followup
-    except ImportError as e:
-        log.warning(f"mobile_assistant not available: {e}")
-        return
-    from telegram_router import send_draft_to_asi, send_followup_to_asi
+    """
+    Notify-Only mode (06/2026): ‫כשמגיעה ‫הודעה ‫חדשה — ‫**לא ‫מפעילים ‫Claude**.
+    ‫שומרים ‫ב-DB ‫עם ‫status="notify_only" ‫ושולחים ‫התראה ‫גולמית ‫בטלגרם.
+    ‫אסי ‫מחליט ‫אם ‫זה ‫שווה ‫טיוטה — ‫אם ‫כן, ‫עושה ‫Reply ‫עם ‫"טיוטה" ‫ואז
+    ‫Claude ‫רץ ‫ויוצר ‫טיוטה ‫מלאה.
+    """
+    from telegram_router import send_inbound_notification
     from db import add_pending_reply, update_reply_telegram_id
 
-    # ‫קביעת ‫סיווג: ‫חדשה ‫או ‫המשך
-    mode, prev_ctx = ("new", "")
-    if msgs_sorted_desc:
-        mode, prev_ctx = _classify_conversation(msgs_sorted_desc, phone)
+    log.info(f"[mobile] notify-only inbound: {phone} ({name}) — {text[:60]!r}")
 
-    log.info(f"[mobile] processing {mode} inbound: {phone} ({name}) — {text[:60]!r}")
-
-    # 1) Generate draft via Claude (cheap or full path)
-    summary = ""
-    draft   = ""
-    try:
-        if mode == "followup":
-            # ‫קצר ‫וזול — ‫השתמש ‫בcontext ‫קיים
-            draft = draft_followup(phone, name, text,
-                                    previous_context=prev_ctx, dashboard=dc)
-            summary = "(המשך שיחה — context מהdraft הקודם)"
-        else:
-            summary, draft = draft_response(phone, name, text, dashboard=dc)
-    except Exception as e:
-        log.exception(f"draft generation failed ({mode}): {e}")
-        summary = f"⚠️ Claude draft failed: {e}"
-        draft   = "(לא הצלחתי לנסח טיוטה אוטומטית — אנא טפל ידנית)"
-
-    # 2) Persist
+    # 1) Persist as notify_only (no Claude yet)
     reply = add_pending_reply(
         customer_phone=phone,
         customer_name=name,
         customer_message=text,
-        context_summary=summary,
-        claude_draft=draft,
+        context_summary="",      # ‫ייווצר ‫מאוחר ‫יותר ‫אם ‫תתבקש ‫טיוטה
+        claude_draft="",         # ‫אותו ‫דבר
     )
-
-    # 3) Send to Asi — different format per mode
+    # ‫סמן ‫סטטוס ‫`notify_only` ‫(במקום ‫`waiting` ‫ברירת ‫המחדל)‬
     try:
-        if mode == "followup":
-            msg_id = send_followup_to_asi(reply)
-        else:
-            msg_id = send_draft_to_asi(reply)
+        from db import set_reply_status
+        set_reply_status(reply.id, "notify_only")
+    except Exception as e:
+        # ‫fallback ‫אם ‫set_reply_status ‫לא ‫קיים ‫עדיין ‫(שדרוג ‫הדרגתי)‬
+        log.warning(f"set_reply_status not available: {e}")
+
+    # 2) Send raw notification to Asi (no Claude, no cost)
+    try:
+        msg_id = send_inbound_notification(reply)
         if msg_id:
             update_reply_telegram_id(reply.id, msg_id)
     except Exception as e:
-        log.exception(f"Telegram send failed: {e}")
+        log.exception(f"Telegram notify failed: {e}")
 
 
 def _poll_once(dc: ChatRaceDashboardClient) -> int:

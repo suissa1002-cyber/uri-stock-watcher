@@ -433,6 +433,23 @@ def list_waiting_replies() -> list[PendingReply]:
         ).scalars().all())
 
 
+def list_notify_only_replies() -> list[PendingReply]:
+    """‫הודעות ‫שמחכות ‫להחלטה ‫(עדיין ‫בלי ‫טיוטה — ‫מצב ‫notify-only)."""
+    with session_scope() as s:
+        return list(s.execute(
+            select(PendingReply).where(PendingReply.status == "notify_only")
+                                 .order_by(PendingReply.created_at.desc())
+        ).scalars().all())
+
+
+def set_reply_status(reply_id: int, status: str):
+    """‫מעדכן ‫סטטוס ‫של ‫PendingReply (notify_only/waiting/sent/cancelled)."""
+    with session_scope() as s:
+        r = s.get(PendingReply, reply_id)
+        if r:
+            r.status = status
+
+
 def get_pending_reply(reply_id: int) -> Optional[PendingReply]:
     with session_scope() as s:
         return s.get(PendingReply, reply_id)
