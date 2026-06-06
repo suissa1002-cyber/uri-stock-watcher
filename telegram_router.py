@@ -192,8 +192,12 @@ def _fmt_thread_lines(thread: list) -> str:
         ts = item.get("ts") or 0
         if ts:
             dt_il = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IL)
-            when = (dt_il.strftime("%H:%M") if dt_il.date() == today_il
-                     else dt_il.strftime("%d/%m %H:%M"))
+            if dt_il.date() == today_il:
+                when = dt_il.strftime("%H:%M")              # ‫היום
+            elif dt_il.year == today_il.year:
+                when = dt_il.strftime("%d/%m %H:%M")        # ‫אותה ‫שנה, ‫יום ‫אחר
+            else:
+                when = dt_il.strftime("%d/%m/%y %H:%M")     # ‫שנה ‫אחרת
         else:
             when = ""
         text = _escape_html((item.get("text") or "").strip())
