@@ -279,34 +279,55 @@ def _poll_once(dc: ChatRaceDashboardClient) -> int:
             max_ts = max(max_ts, la)
             continue
 
-        # Skip if a **human agent** already replied AFTER this customer message.
-        # Bot auto-replies (sent_by=0 — e.g. "תודה, פנייתך התקבלה",
-        # interactive menus, `[template:...]`) are NOT a real reply — they're
-        # the welcome flow. We still want to surface the customer's question
-        # to Asi in mobile mode.
-        last_in_ts = int(last_in.get("ts") or 0)
-        last_human_out = next(
-            (m for m in msgs_sorted
-              if m.get("direction") == "out"
-              and m.get("sent_by") not in (None, 0, "0", "")),
-            None,
+        # ‫Skip ‫if ‫someone ‫already ‫replied ‫AFTER ‫this ‫customer ‫message.
+        # ‫"Reply" ‫כולל:
+        #  ‫(א) ‫הודעה ‫אנושית ‫מפורשת ‫(sent_by != 0) ‫— ‫עובד ‫מהדשבורד
+        #  ‫(ב) ‫הודעת ‫טקסט ‫חופשי ‫מהbot ‫(sent_by=0) ‫**עם ‫אורך > 50 ‫תווים**‬
+        #      ‫שאינה ‫template/interactive. ‫זה ‫תופס ‫תשובות ‫שcalled ‫"send_text_as_human"
+        #      ‫שולחות ‫בפועל ‫(אורי-תזמון, ‫אורי-Claude ‫מהסנטופ) ‫שיוצאות ‫עם ‫sent_by=0.
+        # ‫תפריטי ‫bot ‫(`[interactive]...`, ‫`[template:...]`, ‫"תודה ‫פנייתך ‫התקבלה")
+        # ‫עוברים ‫סף ‫50 ‫תווים? ‫"תודה, ‫פנייתך ‫התקבלה ‫בהצלחה ‫אחד ‫מנציגנו ‫יחזור ‫אליך
+        # ‫בהקדם ‫האפשרי." ‫זה ‫~80 ‫תווים — ‫אז ‫ננטרל ‫אותם ‫במפורש.‬
+        BOT_AUTO_PREFIXES = (
+            "[interactive", "[template:", "[image]", "[file]",
+            "‫תודה, פנייתך התקבלה", "תודה, פנייתך התקבלה",
+            "‫הנה ‫מה ‫שמצאתי", "הנה מה שמצאתי",
+            "‫מה ‫השם ‫המלא", "מה השם המלא",
+            "‫אנא ‫פרטו ‫לגביי", "אנא פרטו לגביי",
         )
-        if last_human_out and int(last_human_out.get("ts") or 0) > last_in_ts:
-            # A human already replied. Move cursor and skip.
+        last_in_ts = int(last_in.get("ts") or 0)
+
+        def _is_real_reply(m):
+            if m.get("direction") != "out":
+                return False
+            sb = m.get("sent_by")
+            tx = (m.get("text") or "").strip()
+            if sb not in (None, 0, "0", ""):
+                return True  # ‫אנושי ‫מפורש
+            # ‫bot (sent_by=0): ‫רק ‫אם ‫טקסט ‫ארוך ‫ולא ‫מתחיל ‫במחרוזת ‫מוכרת ‫של ‫bot
+            if len(tx) <= 50:
+                return False
+            if any(tx.startswith(p) for p in BOT_AUTO_PREFIXES):
+                return False
+            return True
+
+        last_reply = next((m for m in msgs_sorted if _is_real_reply(m)), None)
+        if last_reply and int(last_reply.get("ts") or 0) > last_in_ts:
             max_ts = max(max_ts, la)
             continue
 
-        # ─── Cost guard: ‫dedup ‫על ‫טקסט ‫זהה ‫בלבד ‫─────────────────
-        # ‫הבעיה ‫שראינו ‫(05/06/2026): ‫אם ‫אסי ‫לא ‫מטפל ‫בdraft, ‫הוא ‫נשאר ‫`waiting`
-        # ‫אבל ‫הdedup ‫הישן ‫בודק ‫רק ‫status=waiting — ‫אם ‫הסטטוס ‫כבר ‫sent/cancelled
-        # ‫ואותו ‫טקסט ‫מגיע ‫שוב, ‫זה ‫היה ‫יוצר ‫עוד ‫draft. 8x ‫על ‫אותו ‫טקסט.
-        # ‫**הגנה ‫שהוספנו**: ‫אם ‫קיים ‫**אותו ‫טקסט ‫בדיוק** ‫מאותו ‫טלפון ‫תוך 30 ‫דק'
-        # ‫(בכל ‫סטטוס) — ‫מדלגים. ‫תשובה ‫**שונה** ‫של ‫הלקוח ‫כן ‫עוברת ‫(זה ‫context ‫חדש).‬
+        # ─── Cost guard: ‫dedup ‫על ‫טקסט ‫זהה ‫─────────────────
+        # ‫(05/06/2026 ‫→ 06/06/2026)‬: ‫הגדלנו ‫מ-30 ‫דק' ‫ל-24 ‫שעות ‫אחרי ‫שהבחנו
+        # ‫שתשובה ‫מתוזמנת ‫שיצאה ‫שעות ‫אחרי ‫הinbound ‫המקורי ‫גרמה ‫להתראה ‫כפולה:
+        # ‫`send_text_as_human` ‫שולח ‫עם ‫`sent_by=0` (נחשב ‫bot ‫אצל ‫הdashboard),
+        # ‫אז ‫הליסנר ‫לא ‫מזהה ‫שטיפלנו, ‫ובדוק ‫הdedup ‫הישן ‫כבר ‫מחוץ ‫לחלון ‫30 ‫דק'.
+        # ‫24 ‫שעות ‫מספיק ‫לכסות ‫תזמונים ‫מתוזמנים ‫ועדיין ‫מאפשר ‫למישהו ‫לחזור ‫אחרי
+        # ‫כמה ‫שעות ‫עם ‫שאלה ‫**שונה**.‬
         from db import session_scope as _ss, PendingReply as _PR
         from sqlalchemy import select as _select
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         from sqlalchemy import desc as _desc
-        cutoff = _dt.now(_tz.utc) - _td(minutes=30)
+        cutoff = _dt.now(_tz.utc) - _td(hours=24)
         with _ss() as _s:
             recent = _s.execute(
                 _select(_PR).where(
@@ -316,8 +337,8 @@ def _poll_once(dc: ChatRaceDashboardClient) -> int:
                 ).order_by(_desc(_PR.created_at)).limit(1)
             ).scalars().first()
         if recent:
-            log.info(f"  cost-guard: skipping {phone} — same text already "
-                     f"drafted <30min ago (status={recent.status})")
+            log.info(f"  cost-guard: skipping {phone} — same inbound text already "
+                     f"drafted <24h ago (status={recent.status})")
             max_ts = max(max_ts, la)
             continue
 
