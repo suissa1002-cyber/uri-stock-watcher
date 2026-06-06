@@ -155,9 +155,26 @@ def _conversation_thread(msgs_sorted_desc: list, current_in_ts: int,
             items.append({"role": "in", "text": text, "ts": ts,
                            "is_new": ts == current_in_ts})
         elif direction == "out":
+            # ‫בודקים ‫אם ‫זו ‫תשובה ‫אמיתית ‫שלנו, ‫או ‫רק ‫bot ‫אוטומטי.
+            # ‫הלוגיקה ‫זהה ‫לזו ‫בסיווג ‫_is_real_reply ‫למניעת ‫כפילות ‫התראה:
+            # ‫sent_by != 0 → ‫אנושי ‫מפורש. ‫sent_by=0 + ‫טקסט > 50 ‫תווים ‫שלא ‫מתחיל
+            # ‫במחרוזת ‫bot ‫מוכרת → ‫זו ‫תשובה ‫שלנו ‫שיצאה ‫דרך ‫send_text_as_human.‬
             sb = m.get("sent_by")
-            if sb in (None, 0, "0", ""):
-                continue  # ‫bot ‫auto
+            is_human_explicit = sb not in (None, 0, "0", "")
+            BOT_AUTO_PREFIXES = (
+                "[interactive", "[template:", "[image]", "[file]",
+                "‫תודה, פנייתך התקבלה", "תודה, פנייתך התקבלה",
+                "‫הנה ‫מה ‫שמצאתי", "הנה מה שמצאתי",
+                "‫מה ‫השם ‫המלא", "מה השם המלא",
+                "‫אנא ‫פרטו ‫לגביי", "אנא פרטו לגביי",
+            )
+            is_long_freeform = (
+                not is_human_explicit
+                and len(text) > 50
+                and not any(text.startswith(p) for p in BOT_AUTO_PREFIXES)
+            )
+            if not (is_human_explicit or is_long_freeform):
+                continue  # ‫bot ‫auto (תפריט/template) — ‫מדלגים
             if not text or text.startswith("[template:") or text.startswith("[interactive"):
                 continue
             items.append({"role": "out", "text": text, "ts": ts, "is_new": False})
