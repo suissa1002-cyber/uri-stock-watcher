@@ -140,8 +140,29 @@ def _customer_hashtag(phone: str) -> str:
     return f"#טל{digits}" if digits else ""
 
 
+def _fmt_thread_lines(thread: list) -> str:
+    """
+    ‫מעצב ‫thread ‫של ‫שיחה ‫כtelegram-friendly:
+    ‫🔵 ‫הודעת ‫לקוח · 🟢 ‫תשובה ‫שלך · ‫שעה · ‫טקסט · ‫סימון ‫"חדש" ‫להודעה ‫המעוררת.‬
+    """
+    from datetime import datetime, timezone, timedelta
+    IL = timezone(timedelta(hours=3))
+    lines = []
+    for item in thread or []:
+        ts = item.get("ts") or 0
+        when = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IL).strftime("%H:%M") if ts else ""
+        text = _escape_html((item.get("text") or "").strip())
+        # ‫מקצרים ‫הודעות ‫ארוכות (אבל ‫לא ‫קופחים ‫בקצר)
+        if len(text) > 250:
+            text = text[:240] + "…"
+        emoji = "🔵" if item.get("role") == "in" else "🟢"
+        new_marker = "  ⬅️ <b>חדש</b>" if item.get("is_new") else ""
+        lines.append(f"{_RLM}{emoji}  <i>{when}</i>  {text}{new_marker}")
+    return "\n".join(lines)
+
+
 def send_inbound_notification(reply: PendingReply,
-                                prev_human_outbound: list = None) -> Optional[int]:
+                                thread: list = None) -> Optional[int]:
     """
     Notify-Only mode: ‫שולח ‫**התראה ‫גולמית ‫בלבד** ‫בלי ‫להפעיל ‫Claude.
     ‫אסי ‫מחליט ‫אם ‫שווה ‫טיוטה — ‫אם ‫כן, ‫עושה ‫Reply ‫עם ‫"טיוטה".
@@ -149,32 +170,26 @@ def send_inbound_notification(reply: PendingReply,
     ‫סדר ‫השורות: ‫טקסט ‫עברי ‫קודם, ‫אמוג'י ‫בסוף — ‫כך ‫הטקסט ‫נצמד ‫ימינה ‫כסביר ‫RTL.
     ‫הhashtag ‫בסוף ‫הוא ‫לחיץ — ‫אסי ‫לוחץ ‫ורואה ‫את ‫כל ‫ההיסטוריה ‫מאותו ‫לקוח.‬
 
-    ‫`prev_human_outbound`: ‫עד 2 ‫תגובות ‫אנושיות ‫קודמות ‫שלך/אורי ‫(מהחדש ‫לישן).
-    ‫אם ‫קיים — ‫מציג ‫בלוק ‫הקשר ‫קצר ‫כדי ‫שתבין ‫על ‫מה ‫הלקוח ‫מגיב.
+    ‫`thread`: ‫רשימת ‫dicts ‫`{role,text,ts,is_new}` — ‫מציגים ‫כשיחה ‫קומפקטית
+    ‫(🔵 ‫לקוח, ‫🟢 ‫אתה) ‫כדי ‫שאסי ‫יבין ‫מיד ‫את ‫הקשר ‫בלי ‫קליקים.‬
     """
-    msg_esc  = _escape_html(reply.customer_message)
     name_esc = _escape_html(reply.customer_name or "לקוח")
     tag      = _customer_hashtag(reply.customer_phone)
 
-    # ‫בלוק ‫קונטקסט (רק ‫אם ‫יש)‬
-    context_block = ""
-    if prev_human_outbound:
-        # ‫מציג ‫מהישן ‫לחדש (סדר ‫זמן ‫טבעי ‫לקריאה)‬
-        lines = []
-        for msg in reversed(prev_human_outbound):
-            # ‫מגביל ‫אורך ‫לכל ‫שורה — ‫רק ‫רמז ‫להקשר
-            msg_short = msg[:200] + ("…" if len(msg) > 200 else "")
-            lines.append(f"{_RLM}<blockquote>{_escape_html(msg_short)}</blockquote>")
-        context_block = (
-            f"\n{_RLM}<i>ענית לו קודם 📜</i>\n"
-            + "\n".join(lines)
-        )
+    # ‫אם ‫אין ‫thread (fallback), ‫מציגים ‫רק ‫את ‫ההודעה ‫הנוכחית
+    if not thread:
+        thread = [{"role": "in",
+                    "text": reply.customer_message,
+                    "ts": 0,
+                    "is_new": True}]
+    thread_block = _fmt_thread_lines(thread)
 
     body = (
         f"{_RLM}<b>{name_esc}</b>  📥\n"
         f"{_RLM}<code>{reply.customer_phone}</code>  ·  <code>#{reply.id}</code>\n"
-        f"{_RLM}<blockquote>{msg_esc}</blockquote>"
-        f"{context_block}\n"
+        f"\n"
+        f"{thread_block}\n"
+        f"\n"
         f"{_RLM}<i>השב <b>טיוטה</b> כדי שאכין תשובה  💬</i>\n"
         f"{_RLM}{tag}"
     )

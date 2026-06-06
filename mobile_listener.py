@@ -87,31 +87,50 @@ def _classify_conversation(msgs_sorted_desc: list, phone: str) -> tuple[str, str
     return ("followup", prev_ctx)
 
 
-def _recent_human_outbound(msgs_sorted_desc: list, limit: int = 2) -> list[str]:
+def _conversation_thread(msgs_sorted_desc: list, current_in_ts: int,
+                          max_items: int = 12) -> list[dict]:
     """
-    ‫מחלץ ‫עד ‫`limit` ‫הודעות ‫יוצאות ‫**אנושיות** ‫(sent_by != 0) ‫אחרונות.
-    ‫מסנן: ‫תפריטי-bot ‫(sent_by=0), ‫templates ‫אוטומטיים, ‫הודעות ‫ריקות.
-    ‫מחזיר ‫רשימה ‫של ‫מחרוזות (ממוין ‫מהחדש ‫לישן).
+    ‫בונה ‫"thread ‫view" ‫של ‫השיחה — ‫כל ‫ההודעות ‫הרלוונטיות ‫הקרובות ‫להודעה
+    ‫הנוכחית, ‫כדי ‫שאסי ‫יבין ‫את ‫ההקשר ‫המלא ‫בלי ‫להרים ‫טלפון.
+
+    ‫**הלוגיקה**:
+    ‫- ‫מציגים ‫כל ‫הודעת ‫לקוח (in) ‫וכל ‫תשובה ‫אנושית ‫שלך (out + sent_by != 0)
+    ‫- ‫**מסננים**: ‫תפריטים ‫אוטומטיים ‫של ‫הbot, ‫templates, ‫הודעות ‫ריקות
+    ‫- ‫מסדרים ‫מהישן ‫לחדש (סדר ‫טבעי ‫לקריאה)
+    ‫- ‫מגביל ‫ל-`max_items` ‫אחרונות
+
+    ‫מחזיר ‫רשימה ‫של ‫dicts: ‫`{role: 'in'|'out', text, ts, is_new}`.
     """
     if not msgs_sorted_desc:
         return []
-    out = []
+    # ‫עוברים ‫מהחדש ‫לישן ‫ועוצרים ‫אחרי ‫max_items, ‫ואז ‫הופכים
+    items = []
     for m in msgs_sorted_desc:
-        if m.get("direction") != "out":
-            continue
-        sb = m.get("sent_by")
-        if sb in (None, 0, "0", ""):
-            continue  # ‫bot, ‫לא ‫אנושי
+        direction = m.get("direction")
         text = (m.get("text") or "").strip()
-        if not text or text.startswith("[template:") or text.startswith("[interactive"):
-            continue
-        # ‫קצרים ‫מ-3 ‫תווים = ‫לא ‫שימושי
-        if len(text) < 3:
-            continue
-        out.append(text)
-        if len(out) >= limit:
+        ts = int(m.get("ts") or 0)
+        if direction == "in":
+            # ‫סנן ‫קליקים ‫על ‫תפריט (text קצר ‫שמופיע ‫בכפתורים) — ‫אבל ‫שומרים
+            # ‫טקסטים ‫אמיתיים. ‫קליק ‫תפריט ‫נראה ‫כמו ‫מילה ‫בודדה ‫("שירות ‫לקוחות")
+            # ‫והוא ‫עם ‫שדה ‫click=2. ‫אבל ‫אנחנו ‫כן ‫רוצים ‫להציג ‫קליקים ‫ראשונים
+            # ‫כי ‫הם ‫מראים ‫על ‫הכוונה ‫הראשונית.‬
+            if not text:
+                continue
+            items.append({"role": "in", "text": text, "ts": ts,
+                           "is_new": ts == current_in_ts})
+        elif direction == "out":
+            sb = m.get("sent_by")
+            if sb in (None, 0, "0", ""):
+                # ‫bot ‫auto — ‫תפריט ‫או ‫template. ‫מדלגים.
+                continue
+            if not text or text.startswith("[template:") or text.startswith("[interactive"):
+                continue
+            items.append({"role": "out", "text": text, "ts": ts, "is_new": False})
+        if len(items) >= max_items:
             break
-    return out
+    # ‫הופכים ‫למהישן ‫לחדש‬
+    items.reverse()
+    return items
 
 
 def _process_new_inbound(phone: str, name: str, text: str, ts: int,
@@ -130,11 +149,11 @@ def _process_new_inbound(phone: str, name: str, text: str, ts: int,
     from telegram_router import send_inbound_notification
     from db import add_pending_reply, update_reply_telegram_id
 
-    # ‫שלוף ‫קונטקסט ‫מהשיחה ‫(זול ‫מאוד — ‫רק ‫ConnectOp, ‫לא ‫Claude)
-    prev_humans = _recent_human_outbound(msgs_sorted_desc or [], limit=2)
+    # ‫שלוף ‫thread ‫של ‫השיחה ‫(זול ‫מאוד — ‫רק ‫ConnectOp, ‫לא ‫Claude)‬
+    thread = _conversation_thread(msgs_sorted_desc or [], current_in_ts=ts, max_items=12)
 
     log.info(f"[mobile] notify-only inbound: {phone} ({name}) — {text[:60]!r}"
-              f"  prev_human={len(prev_humans)}")
+              f"  thread={len(thread)}")
 
     # 1) Persist as notify_only (no Claude yet)
     reply = add_pending_reply(
@@ -154,7 +173,7 @@ def _process_new_inbound(phone: str, name: str, text: str, ts: int,
 
     # 2) Send raw notification to Asi (no Claude, no cost)
     try:
-        msg_id = send_inbound_notification(reply, prev_human_outbound=prev_humans)
+        msg_id = send_inbound_notification(reply, thread=thread)
         if msg_id:
             update_reply_telegram_id(reply.id, msg_id)
     except Exception as e:
