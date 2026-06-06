@@ -181,14 +181,21 @@ def _fmt_thread_lines(thread: list) -> str:
     ‫מעצב ‫thread ‫של ‫שיחה ‫כtelegram-friendly:
     ‫הודעת ‫לקוח ‫ב-<blockquote> ‫(תכלת), ‫תשובה ‫שלך ‫בbold ‫עם ‫↩ ‫(בלי ‫bubble) —
     ‫כך ‫קל ‫להבחין ‫מי ‫אמר ‫מה ‫בלי ‫עיגולים ‫צבעוניים.
-    ‫תמונות ‫שלך ‫אסי ‫רואה ‫בנפרד ‫מתחת — ‫כאן ‫רק ‫סמן ‫"📷 ‫(תמונה)" ‫כסימן.‬
+    ‫תמונות ‫שלך ‫אסי ‫רואה ‫בנפרד ‫מתחת — ‫כאן ‫רק ‫סמן ‫"📷 ‫(תמונה)" ‫כסימן.
+    ‫זמנים: ‫אם ‫ההודעה ‫מהיום — ‫"HH:MM" ‫בלבד. ‫אחרת — ‫"DD/MM HH:MM" ‫שכולל ‫תאריך.‬
     """
     from datetime import datetime, timezone, timedelta
     IL = timezone(timedelta(hours=3))
+    today_il = datetime.now(IL).date()
     parts = []
     for item in thread or []:
         ts = item.get("ts") or 0
-        when = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IL).strftime("%H:%M") if ts else ""
+        if ts:
+            dt_il = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IL)
+            when = (dt_il.strftime("%H:%M") if dt_il.date() == today_il
+                     else dt_il.strftime("%d/%m %H:%M"))
+        else:
+            when = ""
         text = _escape_html((item.get("text") or "").strip())
         # ‫מקצרים ‫הודעות ‫ארוכות (אבל ‫לא ‫קופחים ‫בקצר)
         if len(text) > 250:
