@@ -262,6 +262,37 @@ def cancel_reminder_endpoint(rid: int):
         return {"ok": True, "id": rid, "status": "cancelled"}
 
 
+class ScheduleSendRequest(BaseModel):
+    """‫תזמון ‫שליחת ‫הודעת ‫WhatsApp ‫לזמן ‫עתידי."""
+    due_at:        str = Field(..., description="ISO datetime IL time, e.g. '2026-06-06 20:30'")
+    customer_phone:str = Field(..., description="‫טלפון ‫בינלאומי ‫בלי +")
+    customer_name: str = Field("",  description="‫שם ‫לתיעוד")
+    text:          str = Field(..., description="‫טקסט ‫ההודעה ‫(נשלח ‫כמו-שהוא)")
+
+
+@app.post("/admin/schedule-send", dependencies=[Depends(require_token)])
+def schedule_send_endpoint(req: ScheduleSendRequest):
+    """‫מתזמן ‫שליחת ‫הודעת ‫WhatsApp ‫ללקוח ‫בזמן ‫עתידי. ‫ההודעה ‫תישלח
+    ‫אוטומטית ‫כשהזמן ‫יגיע ‫(הליסנר ‫בודק ‫כל 30s)."""
+    due_utc = _parse_due_at(req.due_at)
+    a = add_scheduled_action(
+        action_type="send_message",
+        target_phone=req.customer_phone,
+        target_name=req.customer_name or "",
+        due_at=due_utc,
+        note=f"text:{req.text}",
+    )
+    return {
+        "id": a.id,
+        "due_at_il": pytz.UTC.localize(a.due_at).astimezone(
+            pytz.timezone(TZ_NAME)).strftime("%Y-%m-%d %H:%M"),
+        "customer_name": a.target_name,
+        "customer_phone": a.target_phone,
+        "text_preview": req.text[:200],
+        "status": a.status,
+    }
+
+
 @app.post("/admin/cancel-old-drafts", dependencies=[Depends(require_token)])
 def cancel_old_drafts(hours: int = 2):
     """‫מבטל ‫כל ‫`PendingReply` ‫עם ‫סטטוס ‫`waiting` ‫שנוצר ‫לפני ‫>X ‫שעות.
