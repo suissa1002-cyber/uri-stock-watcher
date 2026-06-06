@@ -143,11 +143,12 @@ def _customer_hashtag(phone: str) -> str:
 def _fmt_thread_lines(thread: list) -> str:
     """
     ‫מעצב ‫thread ‫של ‫שיחה ‫כtelegram-friendly:
-    ‫🔵 ‫הודעת ‫לקוח · 🟢 ‫תשובה ‫שלך · ‫שעה · ‫טקסט · ‫סימון ‫"חדש" ‫להודעה ‫המעוררת.‬
+    ‫הודעת ‫לקוח ‫ב-<blockquote> ‫(תכלת), ‫תשובה ‫שלך ‫בbold ‫עם ‫↩ ‫(בלי ‫bubble) —
+    ‫כך ‫קל ‫להבחין ‫מי ‫אמר ‫מה ‫בלי ‫עיגולים ‫צבעוניים.‬
     """
     from datetime import datetime, timezone, timedelta
     IL = timezone(timedelta(hours=3))
-    lines = []
+    parts = []
     for item in thread or []:
         ts = item.get("ts") or 0
         when = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IL).strftime("%H:%M") if ts else ""
@@ -155,10 +156,21 @@ def _fmt_thread_lines(thread: list) -> str:
         # ‫מקצרים ‫הודעות ‫ארוכות (אבל ‫לא ‫קופחים ‫בקצר)
         if len(text) > 250:
             text = text[:240] + "…"
-        emoji = "🔵" if item.get("role") == "in" else "🟢"
-        new_marker = "  ⬅️ <b>חדש</b>" if item.get("is_new") else ""
-        lines.append(f"{_RLM}{emoji}  <i>{when}</i>  {text}{new_marker}")
-    return "\n".join(lines)
+        is_new = item.get("is_new")
+        new_marker = "   ⬅️ <b>חדש</b>" if is_new else ""
+        if item.get("role") == "in":
+            # ‫לקוח: ‫תווית ‫קטנה + ‫blockquote ‫תכלת
+            parts.append(
+                f"{_RLM}<i>לקוח · {when}</i>{new_marker}\n"
+                f"{_RLM}<blockquote>{text}</blockquote>"
+            )
+        else:
+            # ‫אתה: ‫תווית ‫קטנה + ‫טקסט ‫מודגש ‫עם ‫↩ (בלי ‫bubble)
+            parts.append(
+                f"{_RLM}<i>אתה · {when}</i>{new_marker}\n"
+                f"{_RLM}<b>↩  {text}</b>"
+            )
+    return "\n".join(parts)
 
 
 def send_inbound_notification(reply: PendingReply,
