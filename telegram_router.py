@@ -65,6 +65,41 @@ ALLOWED_CHAT_IDS = {
     int(TELEGRAM_TASKS_CHAT_ID) if TELEGRAM_TASKS_CHAT_ID.isdigit() else None,
 } - {None}
 
+# ConnectOp dashboard — used for "open conversation" link at the bottom of each
+# notification. The dashboard has no real per-conversation deep link, so we link
+# to the inbox view with the account filter and rely on Asi to find the
+# specific chat using the customer's hashtag we already include.
+_CONNECTOP_ACCOUNT_ID = os.environ.get("CHATRACE_DASHBOARD_ACCOUNT_ID", "")
+_CONNECTOP_INBOX_URL  = (f"https://newapp.connectop.co.il/en/inbox?acc={_CONNECTOP_ACCOUNT_ID}"
+                         if _CONNECTOP_ACCOUNT_ID
+                         else "https://newapp.connectop.co.il/en/inbox")
+
+
+def _send_photo(photo_url: str, caption: str = "") -> Optional[int]:
+    """‫שולח ‫תמונה ‫כsendPhoto. ‫Telegram ‫מוריד ‫את ‫הURL ‫בעצמה ‫מ-CDN ‫של ‫ConnectOp.
+    ‫עלות: ‫$0 (לא ‫עוברים ‫דרך ‫Render — ‫טלגרם ‫עצמה ‫מורידה)."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_TASKS_CHAT_ID:
+        log.warning("Telegram env missing — skip photo")
+        return None
+    payload = {
+        "chat_id":    int(TELEGRAM_TASKS_CHAT_ID),
+        "photo":      photo_url,
+        "caption":    caption[:1000],  # ‫הגבלת ‫caption ‫של ‫טלגרם
+        "parse_mode": "HTML",
+    }
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+            json=payload, timeout=20,
+        )
+        if r.status_code != 200 or not r.json().get("ok"):
+            log.error(f"Telegram sendPhoto failed: {r.status_code} {r.text[:200]}")
+            return None
+        return r.json().get("result", {}).get("message_id")
+    except Exception as e:
+        log.exception(f"sendPhoto error: {e}")
+        return None
+
 
 def _send(text: str, reply_to: Optional[int] = None,
           parse_mode: str = "HTML") -> Optional[int]:
@@ -123,7 +158,8 @@ def send_draft_to_asi(reply: PendingReply) -> Optional[int]:
         f"\n"
         f"━━━━━━━━━━━━━━\n"
         f"{_RLM}<b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ...  ✏️\n"
-        f"{_RLM}{tag}"
+        f"{_RLM}{tag}\n"
+        f"{_connectop_footer()}"
     )
     return _send(body)
 
@@ -144,7 +180,8 @@ def _fmt_thread_lines(thread: list) -> str:
     """
     ‫מעצב ‫thread ‫של ‫שיחה ‫כtelegram-friendly:
     ‫הודעת ‫לקוח ‫ב-<blockquote> ‫(תכלת), ‫תשובה ‫שלך ‫בbold ‫עם ‫↩ ‫(בלי ‫bubble) —
-    ‫כך ‫קל ‫להבחין ‫מי ‫אמר ‫מה ‫בלי ‫עיגולים ‫צבעוניים.‬
+    ‫כך ‫קל ‫להבחין ‫מי ‫אמר ‫מה ‫בלי ‫עיגולים ‫צבעוניים.
+    ‫תמונות ‫שלך ‫אסי ‫רואה ‫בנפרד ‫מתחת — ‫כאן ‫רק ‫סמן ‫"📷 ‫(תמונה)" ‫כסימן.‬
     """
     from datetime import datetime, timezone, timedelta
     IL = timezone(timedelta(hours=3))
@@ -158,11 +195,12 @@ def _fmt_thread_lines(thread: list) -> str:
             text = text[:240] + "…"
         is_new = item.get("is_new")
         new_marker = "   ⬅️ <b>חדש</b>" if is_new else ""
+        has_image = bool(item.get("image_url")) or item.get("text") == "[תמונה]"
         if item.get("role") == "in":
-            # ‫לקוח: ‫תווית ‫קטנה + ‫blockquote ‫תכלת
+            display = "📷 (תמונה)" if has_image else text
             parts.append(
                 f"{_RLM}<i>לקוח · {when}</i>{new_marker}\n"
-                f"{_RLM}<blockquote>{text}</blockquote>"
+                f"{_RLM}<blockquote>{display}</blockquote>"
             )
         else:
             # ‫אתה: ‫תווית ‫קטנה + ‫טקסט ‫מודגש ‫עם ‫↩ (בלי ‫bubble)
@@ -171,6 +209,11 @@ def _fmt_thread_lines(thread: list) -> str:
                 f"{_RLM}<b>↩  {text}</b>"
             )
     return "\n".join(parts)
+
+
+def _connectop_footer() -> str:
+    """‫שורת ‫קישור ‫ל-ConnectOp ‫inbox ‫בסוף ‫כל ‫כרטיסיה."""
+    return f"{_RLM}<a href=\"{_CONNECTOP_INBOX_URL}\">🌐  פתח ב-ConnectOp</a>"
 
 
 def send_inbound_notification(reply: PendingReply,
@@ -203,9 +246,20 @@ def send_inbound_notification(reply: PendingReply,
         f"{thread_block}\n"
         f"\n"
         f"{_RLM}<i>השב <b>טיוטה</b> כדי שאכין תשובה  💬</i>\n"
-        f"{_RLM}{tag}"
+        f"{_RLM}{tag}\n"
+        f"{_connectop_footer()}"
     )
-    return _send(body)
+    msg_id = _send(body)
+
+    # ‫אחרי ‫הודעת ‫הtext, ‫שולחים ‫תמונות ‫שזיהינו ‫בthread ‫(עד 3 ‫תמונות)
+    image_urls = [it.get("image_url") for it in (thread or []) if it.get("image_url")]
+    for img_url in image_urls[:3]:
+        try:
+            _send_photo(img_url, caption=f"📷 {name_esc}")
+        except Exception as e:
+            log.warning(f"sendPhoto failed for {img_url[:80]}: {e}")
+
+    return msg_id
 
 
 def send_followup_to_asi(reply: PendingReply) -> Optional[int]:
@@ -222,7 +276,8 @@ def send_followup_to_asi(reply: PendingReply) -> Optional[int]:
         f"{_RLM}<b>טיוטה</b>  ·  <code>#{reply.id}</code>  📝\n"
         f"{_RLM}<blockquote>{draft_esc}</blockquote>\n"
         f"{_RLM}<b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ...  ✏️\n"
-        f"{_RLM}{tag}"
+        f"{_RLM}{tag}\n"
+        f"{_connectop_footer()}"
     )
     return _send(body)
 

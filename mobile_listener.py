@@ -87,6 +87,31 @@ def _classify_conversation(msgs_sorted_desc: list, phone: str) -> tuple[str, str
     return ("followup", prev_ctx)
 
 
+def _extract_image_url(content) -> str:
+    """‫מחפש ‫URL ‫של ‫תמונה ‫בblocks ‫של ‫הודעת ‫WhatsApp (אם ‫קיים)."""
+    if not isinstance(content, list):
+        return ""
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        # ‫פורמט ‫א: ‫{type: 'image', image: {link: ...}}
+        if block.get("type") == "image":
+            img = block.get("image", {})
+            if isinstance(img, dict):
+                url = img.get("link") or img.get("url")
+                if url:
+                    return url
+        # ‫פורמט ‫ב: ‫{attachment: {type: 'image', payload: {url: ...}}}
+        att = block.get("attachment")
+        if isinstance(att, dict) and att.get("type") == "image":
+            payload = att.get("payload") or {}
+            if isinstance(payload, dict):
+                url = payload.get("url") or payload.get("link")
+                if url:
+                    return url
+    return ""
+
+
 def _conversation_thread(msgs_sorted_desc: list, current_in_ts: int,
                           max_items: int = 12) -> list[dict]:
     """
@@ -96,39 +121,48 @@ def _conversation_thread(msgs_sorted_desc: list, current_in_ts: int,
     ‫**הלוגיקה**:
     ‫- ‫מציגים ‫כל ‫הודעת ‫לקוח (in) ‫וכל ‫תשובה ‫אנושית ‫שלך (out + sent_by != 0)
     ‫- ‫**מסננים**: ‫תפריטים ‫אוטומטיים ‫של ‫הbot, ‫templates, ‫הודעות ‫ריקות
+    ‫- ‫**מזהים ‫תמונות** ‫ושומרים ‫את ‫ה-URL ‫שלהן ‫כ-`image_url`
     ‫- ‫מסדרים ‫מהישן ‫לחדש (סדר ‫טבעי ‫לקריאה)
     ‫- ‫מגביל ‫ל-`max_items` ‫אחרונות
 
-    ‫מחזיר ‫רשימה ‫של ‫dicts: ‫`{role: 'in'|'out', text, ts, is_new}`.
+    ‫מחזיר ‫רשימה ‫של ‫dicts: ‫`{role: 'in'|'out', text, ts, is_new, image_url}`.
     """
     if not msgs_sorted_desc:
         return []
-    # ‫עוברים ‫מהחדש ‫לישן ‫ועוצרים ‫אחרי ‫max_items, ‫ואז ‫הופכים
     items = []
     for m in msgs_sorted_desc:
         direction = m.get("direction")
         text = (m.get("text") or "").strip()
         ts = int(m.get("ts") or 0)
+        content = m.get("content")
+        image_url = _extract_image_url(content)
         if direction == "in":
-            # ‫סנן ‫קליקים ‫על ‫תפריט (text קצר ‫שמופיע ‫בכפתורים) — ‫אבל ‫שומרים
-            # ‫טקסטים ‫אמיתיים. ‫קליק ‫תפריט ‫נראה ‫כמו ‫מילה ‫בודדה ‫("שירות ‫לקוחות")
-            # ‫והוא ‫עם ‫שדה ‫click=2. ‫אבל ‫אנחנו ‫כן ‫רוצים ‫להציג ‫קליקים ‫ראשונים
-            # ‫כי ‫הם ‫מראים ‫על ‫הכוונה ‫הראשונית.‬
-            if not text:
+            if image_url:
+                items.append({"role": "in", "text": "[תמונה]", "ts": ts,
+                               "is_new": ts == current_in_ts,
+                               "image_url": image_url})
+                if len(items) >= max_items:
+                    break
+                continue
+            if not text or text.startswith("[image"):
+                # ‫תמונה ‫בלי ‫URL ‫שזיהינו — ‫מציינים ‫אבל ‫בלי ‫קישור
+                if text.startswith("[image"):
+                    items.append({"role": "in", "text": "[תמונה]", "ts": ts,
+                                   "is_new": ts == current_in_ts})
+                    if len(items) >= max_items:
+                        break
                 continue
             items.append({"role": "in", "text": text, "ts": ts,
                            "is_new": ts == current_in_ts})
         elif direction == "out":
             sb = m.get("sent_by")
             if sb in (None, 0, "0", ""):
-                # ‫bot ‫auto — ‫תפריט ‫או ‫template. ‫מדלגים.
-                continue
+                continue  # ‫bot ‫auto
             if not text or text.startswith("[template:") or text.startswith("[interactive"):
                 continue
             items.append({"role": "out", "text": text, "ts": ts, "is_new": False})
         if len(items) >= max_items:
             break
-    # ‫הופכים ‫למהישן ‫לחדש‬
     items.reverse()
     return items
 
