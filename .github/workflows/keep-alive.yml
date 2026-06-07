@@ -1,10 +1,14 @@
-# Keep-alive — pings /health every 10 minutes so Render Free doesn't sleep.
-# (Render Free spins down after 15 min idle; this stays under the limit.)
+# Keep-alive — pings /health every 5 minutes so Render Free doesn't sleep.
+# (Render Free spins down after 15 min idle.)
+# GitHub Actions cron isn't always precise — actual gaps can stretch to 10+
+# minutes under load. The Cloudflare Worker `uri-keepalive` provides
+# redundant pings every 5 minutes with a 2.5min offset, so the effective
+# total cadence is ~2-3 minutes.
 name: keep-alive
 
 on:
   schedule:
-    - cron: '*/10 * * * *'   # every 10 minutes
+    - cron: '*/5 * * * *'    # every 5 minutes
   workflow_dispatch:          # allow manual trigger
 
 jobs:
