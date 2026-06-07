@@ -66,13 +66,17 @@ ALLOWED_CHAT_IDS = {
 } - {None}
 
 # ConnectOp dashboard — used for "open conversation" link at the bottom of each
-# notification. The dashboard has no real per-conversation deep link, so we link
-# to the inbox view with the account filter and rely on Asi to find the
-# specific chat using the customer's hashtag we already include.
+# notification. Deep-link pattern is `?acc={ACC}&id={phone}` (validated by Asi
+# on 07/06/2026 — opens the specific customer's chat instantly rather than the
+# generic inbox).
 _CONNECTOP_ACCOUNT_ID = os.environ.get("CHATRACE_DASHBOARD_ACCOUNT_ID", "")
-_CONNECTOP_INBOX_URL  = (f"https://newapp.connectop.co.il/en/inbox?acc={_CONNECTOP_ACCOUNT_ID}"
-                         if _CONNECTOP_ACCOUNT_ID
-                         else "https://newapp.connectop.co.il/en/inbox")
+
+
+def _connectop_chat_url(phone: str) -> str:
+    """‫בונה ‫deep-link ‫לשיחה ‫הספציפית ‫בConnectOp."""
+    if not _CONNECTOP_ACCOUNT_ID or not phone:
+        return f"https://newapp.connectop.co.il/en/inbox?acc={_CONNECTOP_ACCOUNT_ID}"
+    return f"https://newapp.connectop.co.il/en/inbox?acc={_CONNECTOP_ACCOUNT_ID}&id={phone}"
 
 
 def _send_photo(photo_url: str, caption: str = "") -> Optional[int]:
@@ -159,7 +163,7 @@ def send_draft_to_asi(reply: PendingReply) -> Optional[int]:
         f"━━━━━━━━━━━━━━\n"
         f"{_RLM}<b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ...  ✏️\n"
         f"{_RLM}{tag}\n"
-        f"{_connectop_footer()}"
+        f"{_connectop_footer(reply.customer_phone)}"
     )
     return _send(body)
 
@@ -222,9 +226,10 @@ def _fmt_thread_lines(thread: list) -> str:
     return "\n".join(parts)
 
 
-def _connectop_footer() -> str:
-    """‫שורת ‫קישור ‫ל-ConnectOp ‫inbox ‫בסוף ‫כל ‫כרטיסיה."""
-    return f"{_RLM}<a href=\"{_CONNECTOP_INBOX_URL}\">🌐  פתח ב-ConnectOp</a>"
+def _connectop_footer(phone: str = "") -> str:
+    """‫שורת ‫קישור ‫לשיחה ‫הספציפית ‫בConnectOp ‫בסוף ‫כל ‫כרטיסיה."""
+    url = _connectop_chat_url(phone)
+    return f"{_RLM}<a href=\"{url}\">🌐  פתח שיחה ב-ConnectOp</a>"
 
 
 def send_inbound_notification(reply: PendingReply,
@@ -258,7 +263,7 @@ def send_inbound_notification(reply: PendingReply,
         f"\n"
         f"{_RLM}<i>השב <b>טיוטה</b> כדי שאכין תשובה  💬</i>\n"
         f"{_RLM}{tag}\n"
-        f"{_connectop_footer()}"
+        f"{_connectop_footer(reply.customer_phone)}"
     )
     msg_id = _send(body)
 
@@ -288,7 +293,7 @@ def send_followup_to_asi(reply: PendingReply) -> Optional[int]:
         f"{_RLM}<blockquote>{draft_esc}</blockquote>\n"
         f"{_RLM}<b>שלח</b>  /  <b>עצור</b>  /  <b>שנה:</b> ...  ✏️\n"
         f"{_RLM}{tag}\n"
-        f"{_connectop_footer()}"
+        f"{_connectop_footer(reply.customer_phone)}"
     )
     return _send(body)
 
