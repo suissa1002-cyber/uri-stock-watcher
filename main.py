@@ -104,7 +104,9 @@ def health():
 @app.get("/", response_class=HTMLResponse)
 def index():
     """Simple landing page — stock watches + personal reminders."""
-    watches = list_all_watches(limit=50)
+    # ‫מציגים ‫רק ‫רשומות ‫פעילות ‫(watching/notified) — ‫מבוטלות ‫נשמרות ‫ב-DB ‫אך ‫לא ‫מוצגות‬
+    watches = [w for w in list_all_watches(limit=50)
+               if w.status not in ("cancelled", "cancelled_stale", "stale")]
     rows_html = ""
     for w in watches:
         rows_html += (
