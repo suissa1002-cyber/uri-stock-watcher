@@ -33,7 +33,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 from db import (
-    init_db, add_watch, list_all_watches, mark_cancelled,
+    init_db, add_watch, list_all_watches, mark_cancelled, rename_watch,
     get_mobile_mode, set_mobile_mode, list_waiting_replies,
     add_scheduled_action, ScheduledAction, session_scope,
 )
@@ -183,6 +183,17 @@ def list_watches_endpoint(limit: int = 200):
 def cancel_watch_endpoint(item_id: int):
     mark_cancelled(item_id)
     return {"ok": True, "id": item_id, "status": "cancelled"}
+
+
+class WatchRenameRequest(BaseModel):
+    name: str
+
+
+@app.patch("/watches/{item_id}", dependencies=[Depends(require_token)])
+def rename_watch_endpoint(item_id: int, body: WatchRenameRequest):
+    """עדכון שם הלקוח של רשומת מעקב (לתיקון רשומות שנרשמו עם שם גנרי)."""
+    ok = rename_watch(item_id, body.name)
+    return {"ok": ok, "id": item_id, "name": body.name.strip()}
 
 
 # ─── Personal reminders (Agent Tasks Telegram) ──────────────────────

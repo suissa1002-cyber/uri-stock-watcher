@@ -352,6 +352,19 @@ def mark_cancelled(item_id: int):
             item.status = "cancelled"
 
 
+def rename_watch(item_id: int, name: str) -> bool:
+    """עדכון שם הלקוח של רשומת מעקב (לתיקון רשומות ישנות עם שם גנרי)."""
+    name = (name or "").strip()
+    if not name:
+        return False
+    with session_scope() as s:
+        item = s.get(WatchItem, item_id)
+        if not item:
+            return False
+        item.customer_name = name[:120]
+        return True
+
+
 def update_last_checked(item_id: int):
     with session_scope() as s:
         item = s.get(WatchItem, item_id)
