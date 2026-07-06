@@ -162,6 +162,11 @@ def index():
 
 @app.post("/watch", dependencies=[Depends(require_token)])
 def add_watch_endpoint(req: WatchAddRequest):
+    # ⚠️ בלי מזהה קופה תקין אין מה לבדוק — רשומה עם 0 "צופה" לנצח בלי למצוא כלום
+    # (באג רשומה 6: neworder_id=0 → הלקוח לא קיבל התראה למרות שהמלאי חזר)
+    if not req.neworder_id or int(req.neworder_id) <= 0:
+        raise HTTPException(status_code=400,
+                            detail="neworder_id חסר/0 — חובה מזהה מוצר קופה תקין")
     item = add_watch(
         customer_phone=req.customer_phone,
         customer_name=req.customer_name,
@@ -186,14 +191,23 @@ def cancel_watch_endpoint(item_id: int):
 
 
 class WatchRenameRequest(BaseModel):
-    name: str
+    name: str = ""
+    neworder_id: int = 0
 
 
 @app.patch("/watches/{item_id}", dependencies=[Depends(require_token)])
 def rename_watch_endpoint(item_id: int, body: WatchRenameRequest):
-    """עדכון שם הלקוח של רשומת מעקב (לתיקון רשומות שנרשמו עם שם גנרי)."""
-    ok = rename_watch(item_id, body.name)
-    return {"ok": ok, "id": item_id, "name": body.name.strip()}
+    """עדכון רשומת מעקב: שם לקוח (רשומות עם שם גנרי) ו/או תיקון neworder_id
+    (רשומות ישנות שנשמרו עם 0 ולכן לעולם לא מצאו מלאי — באג רשומה 6)."""
+    out = {"ok": False, "id": item_id}
+    if body.name.strip():
+        out["ok"] = rename_watch(item_id, body.name)
+        out["name"] = body.name.strip()
+    if body.neworder_id and int(body.neworder_id) > 0:
+        from db import set_watch_neworder_id
+        out["ok"] = set_watch_neworder_id(item_id, int(body.neworder_id))
+        out["neworder_id"] = int(body.neworder_id)
+    return out
 
 
 # ─── Personal reminders (Agent Tasks Telegram) ──────────────────────

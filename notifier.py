@@ -53,25 +53,35 @@ def notify_back_in_stock(customer_phone: str, customer_name: str,
                           product_url: str = "",
                           dashboard: Optional[ChatRaceDashboardClient] = None) -> bool:
     """
-    ‫שולח את הודעת חזרה למלאי דרך טמפלייט ConnectOp dashboard.‬
-    ‫מחזיר True אם הטמפלייט נשלח בהצלחה (ConnectOp returned status=OK).‬
+    ‫שולח את הודעת חזרה-למלאי ב-WhatsApp **native דרך GreenOS** (gm-transfers).‬
+    ‫⛔ ConnectOp מת (מחזיר OK בלי למסור) — הוחלף 06/07/2026.‬
+    ‫template מאושר `new_message` דרך POST /api/admin/wa/send-template.‬
+    ‫הצלחה אמיתית = תשובה עם sent:true + message_id (wamid). בלי wamid = לא נמסר.‬
     """
-    dc = dashboard or ChatRaceDashboardClient.from_env()
-    # First name only — for the {{1}} param.
+    import requests
+
+    greenos = os.environ.get("GREENOS_URL", "https://gm-transfers.onrender.com").rstrip("/")
+    admin_key = os.environ.get("GREENOS_ADMIN_KEY", "").strip()
+    if not admin_key:
+        log.error("GREENOS_ADMIN_KEY not set — cannot send stock notification")
+        return False
+
     first_name = (customer_name or "לקוח/ה").strip().split()[0] if customer_name else "לקוח/ה"
     body = build_notification_body(first_name, product_name, branch_name, product_url)
 
-    log.info(f"Sending stock notification to {customer_phone} for {product_name!r}")
+    log.info(f"Sending stock notification (native) to {customer_phone} for {product_name!r}")
     try:
-        resp = dc.send_whatsapp_template(
-            ms_id=customer_phone,
-            template_name=TEMPLATE_NAME,
-            parameters=[first_name, body],
-        )
-        ok = isinstance(resp, dict) and resp.get("status", "").upper() == "OK"
+        r = requests.post(f"{greenos}/api/admin/wa/send-template",
+                          headers={"X-Admin-Key": admin_key,
+                                   "Content-Type": "application/json"},
+                          json={"phone": str(customer_phone),
+                                "name": first_name, "body": body},
+                          timeout=60)
+        resp = r.json() if r.content else {}
+        ok = bool(r.ok and resp.get("sent") and resp.get("message_id"))
         if not ok:
-            log.warning(f"Template send returned non-OK: {resp}")
+            log.warning(f"Native template send failed ({r.status_code}): {str(resp)[:300]}")
         return ok
     except Exception as e:
-        log.exception(f"Failed to send template: {e}")
+        log.exception(f"Failed to send native template: {e}")
         return False

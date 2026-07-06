@@ -365,6 +365,18 @@ def rename_watch(item_id: int, name: str) -> bool:
         return True
 
 
+def set_watch_neworder_id(item_id: int, neworder_id: int) -> bool:
+    """תיקון מזהה הקופה של רשומת מעקב (רשומות ישנות שנשמרו עם 0 — באג רשומה 6)."""
+    if not neworder_id or int(neworder_id) <= 0:
+        return False
+    with session_scope() as s:
+        item = s.get(WatchItem, item_id)
+        if not item:
+            return False
+        item.neworder_id = int(neworder_id)
+        return True
+
+
 def update_last_checked(item_id: int):
     with session_scope() as s:
         item = s.get(WatchItem, item_id)
