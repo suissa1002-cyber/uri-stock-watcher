@@ -60,7 +60,6 @@ SYSTEM_PROMPT = """\
 
 ## ‫סניפים (כולם באשדוד)‬
 
-- ‫גן העיר אשדוד‬ — 08-6863737
 - ‫סטאר סנטר** ‫(ז'בוטינסקי 45) ‏— 08-9477402
 - ‫סיטי / ‏הציונות 13** — 08-9350202
 - ‫עד הלום / ‏קניון עד הלום** — 08-9350202
@@ -440,7 +439,7 @@ def _tool_check_stock(product_name: str) -> str:
     """NewOrder stock per branch. Returns up to 20 matching products."""
     from shared.neworder_client import NewOrderClient
     nc = NewOrderClient.from_env()
-    branch_names = {1:"גן העיר", 2:"סטאר", 3:"מחסן", 4:"עד הלום", 5:"אתר"}
+    branch_names = {1:"גן העיר (נסגר)", 2:"סטאר", 3:"סיטי", 4:"עד הלום", 5:"אתר"}
     products = nc.get_products(search=product_name)
     out = []
     # 20 matches — enough to cover all variants of a single model (colors + sizes)
